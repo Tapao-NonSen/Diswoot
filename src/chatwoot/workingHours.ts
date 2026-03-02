@@ -54,8 +54,9 @@ export function isWithinWorkingHours(
   if (today.open_all_day) return true;
 
   const current = hour * 60 + minute;
-  const open = today.open_hour * 60 + today.open_minutes;
-  const close = today.close_hour * 60 + today.close_minutes;
+  // open_hour/close_hour are null when closed_all_day — guard already passed above
+  const open = (today.open_hour ?? 0) * 60 + (today.open_minutes ?? 0);
+  const close = (today.close_hour ?? 0) * 60 + (today.close_minutes ?? 0);
 
   return current >= open && current < close;
 }
@@ -84,12 +85,12 @@ export function nextOpeningTime(
       return DAY_NAMES[checkDay] ?? "soon";
     }
 
-    const openAt = entry.open_hour * 60 + entry.open_minutes;
+    const openAt = (entry.open_hour ?? 0) * 60 + (entry.open_minutes ?? 0);
     // Today: skip if we're already past (or at) the opening time
     if (offset === 0 && currentMinutes >= openAt) continue;
 
-    const hh = String(entry.open_hour).padStart(2, "0");
-    const mm = String(entry.open_minutes).padStart(2, "0");
+    const hh = String(entry.open_hour ?? 0).padStart(2, "0");
+    const mm = String(entry.open_minutes ?? 0).padStart(2, "0");
 
     if (offset === 0) return `today at ${hh}:${mm}`;
     if (offset === 1) return `tomorrow at ${hh}:${mm}`;

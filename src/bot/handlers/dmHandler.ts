@@ -44,7 +44,7 @@ export async function handleDM(message: Message): Promise<void> {
             .setColor(config.colors.warning)
             .setDescription(`⏰  ${offlineMsg}`)
             .setFooter({ text: `Support returns ${returnsText}` });
-          await message.reply({ embeds: [embed] }).catch(() => {});
+          await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
           return; // ← do NOT create or touch the ticket
         }
       }
@@ -90,13 +90,13 @@ export async function handleDM(message: Message): Promise<void> {
         .setColor(config.colors.info)
         .setDescription(`🕐  ${offlineMsg}`)
         .setFooter({ text: `Support returns ${returnsText}` });
-      await message.reply({ embeds: [embed] }).catch(() => {});
+      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
     }
   } catch (err) {
     console.error(`[dmHandler] Error for user ${userId}:`, err);
     const embed = new EmbedBuilder()
       .setColor(config.colors.danger)
       .setDescription("❌  Something went wrong. Please try again in a moment.");
-    await message.reply({ embeds: [embed] }).catch(() => {});
+    await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
   }
 }

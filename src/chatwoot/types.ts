@@ -3,6 +3,7 @@ export interface ChatwootContact {
   name: string;
   email?: string;
   avatar_url?: string;
+  identifier?: string;
 }
 
 export interface ChatwootContactInbox {
@@ -33,13 +34,13 @@ export interface ChatwootMessage {
 }
 
 export interface WorkingHour {
-  day_of_week: number;    // 0 = Sunday … 6 = Saturday
+  day_of_week: number;      // 0 = Sunday … 6 = Saturday
   closed_all_day: boolean;
   open_all_day: boolean;
-  open_hour: number;      // 0-23
-  open_minutes: number;   // 0-59
-  close_hour: number;
-  close_minutes: number;
+  open_hour: number | null;    // null when closed_all_day is true
+  open_minutes: number | null;
+  close_hour: number | null;
+  close_minutes: number | null;
 }
 
 export interface ChatwootInbox {
