@@ -1,0 +1,20 @@
+{
+  "name": "diswoot",
+  "version": "1.0.0",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run index.ts",
+    "deploy-commands": "bun run src/bot/deploy-commands.ts",
+    "typecheck": "bun tsc --noEmit"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5"
+  }
+}
