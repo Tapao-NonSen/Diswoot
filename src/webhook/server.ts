@@ -93,19 +93,23 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
 
       // Suppress CSAT survey templates — the bot sends its own interactive
       // rating embed with buttons on conversation_status_changed → resolved.
-      if (config.ux.csatEnabled && payload.content_attributes?.["csat_survey_link"]) {
-        console.log("[webhook] Suppressed CSAT template (handled by embed)");
-        return;
+      // Chatwoot may flag it via content_attributes OR just embed the survey
+      // link directly in the message content.
+      if (config.ux.csatEnabled) {
+        if (payload.content_attributes?.["csat_survey_link"]) {
+          console.log("[webhook] Suppressed CSAT template (content_attributes)");
+          return;
+        }
+        if (payloadMsg && /\/survey\/responses\//.test(payloadMsg)) {
+          console.log("[webhook] Suppressed CSAT template (survey link in content)");
+          return;
+        }
       }
     }
 
     const hasContent = !!payload.content;
     const hasAttachments = (payload.attachments?.length ?? 0) > 0;
     if (!payload.id || !payload.conversation?.id || (!hasContent && !hasAttachments)) return;
-
-    // Dedup — Chatwoot can fire the webhook more than once per message.
-    // We check first (synchronous), and only mark as sent after the DM is
-    // delivered so a Discord failure doesn't permanently discard the message.
     if (isMessageSent(payload.id)) return;
 
     const mapping = getMappingByConv(payload.conversation.id);
@@ -139,14 +143,16 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
 
   // ── Conversation status changed ──────────────────────────────────────────
   if (event === "conversation_status_changed") {
-    const status = payload.conversation?.status;
-    const prevStatus = payload.conversation?.previous_status;
-    console.log(`[webhook] conversation_status_changed → ${prevStatus} → ${status}, conv: ${payload.conversation?.id}`);
-    if (!payload.conversation?.id) return;
+    const raw = payload as unknown as Record<string, unknown>;
+    const status = payload.conversation?.status ?? raw.status as string | undefined;
+    const prevStatus = payload.conversation?.previous_status ?? raw.previous_status as string | undefined;
+    const convId = payload.conversation?.id ?? raw.id as number | undefined;
+    console.log(`[webhook] conversation_status_changed → ${prevStatus} → ${status}, conv: ${convId}`);
+    if (!convId) return;
 
-    const mapping = getMappingByConv(payload.conversation.id);
+    const mapping = getMappingByConv(convId);
     if (!mapping) {
-      console.warn(`[webhook] No mapping found for conv ${payload.conversation.id} — status DM skipped`);
+      console.warn(`[webhook] No mapping found for conv ${convId} — status DM skipped`);
       return;
     }
 
@@ -157,7 +163,7 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
       if (status === "resolved") {
         // Clear outside-hours notice flag so a fresh notice can be sent
         // if the user messages again after the ticket is resolved.
-        clearOohNotice(payload.conversation.id);
+        clearOohNotice(convId);
 
         await dm.send({
           embeds: [
@@ -173,7 +179,7 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
 
         // ── CSAT ────────────────────────────────────────────────────────────
         if (config.ux.csatEnabled) {
-          const conv = await getConversation(payload.conversation.id);
+          const conv = await getConversation(convId);
           const csatId = conv.uuid;
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder().setCustomId(`csat_${csatId}_1`).setLabel("1 ⭐").setStyle(ButtonStyle.Secondary),
