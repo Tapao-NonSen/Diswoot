@@ -194,6 +194,7 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
                 .setColor(config.colors.primary)
                 .setTitle("⭐  Rate Your Experience")
                 .setDescription(config.ux.csatQuestion)
+                .setTimestamp()
                 .setFooter(brandFooter()),
             ],
             components: [row],
