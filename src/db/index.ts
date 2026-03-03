@@ -25,4 +25,13 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS csat_responses (
+    conv_uuid       TEXT PRIMARY KEY,
+    discord_user_id TEXT NOT NULL,
+    rating          INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    submitted_at    TEXT DEFAULT (datetime('now'))
+  )
+`);
+
 console.log("[db] SQLite ready.");

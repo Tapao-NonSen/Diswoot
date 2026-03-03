@@ -129,12 +129,14 @@ export async function createContact(discordUser: {
 /** Create a new conversation for the contact. */
 export async function createConversation(
   sourceId: string,
-  contactId: number
+  contactId: number,
+  status: "open" | "pending" = "open"
 ): Promise<number> {
   const raw = await request<unknown>("POST", "/conversations", {
     inbox_id: inboxId,
     contact_id: contactId,
     contact_inbox_id: sourceId,
+    status,
   });
   console.debug("[createConversation] raw:", JSON.stringify(raw));
   return unwrap<ChatwootConversation>(raw).id;
@@ -163,10 +165,38 @@ export async function sendNote(convId: number, content: string): Promise<void> {
   });
 }
 
-/** Toggle conversation status between open and resolved. */
+/**
+ * Submit a CSAT rating via Chatwoot's public survey API so it appears in
+ * native CSAT reports. Uses the conversation UUID from csat_survey_link.
+ * No API token required — this is a public endpoint.
+ */
+export async function submitCsatRating(
+  conversationUuid: string,
+  rating: number,
+  feedbackMessage = ""
+): Promise<void> {
+  const url = `${config.chatwoot.baseUrl}/public/api/v1/csat_survey/${conversationUuid}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: {
+        submitted_values: {
+          csat_survey_response: { rating, feedback_message: feedbackMessage },
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Chatwoot CSAT POST → ${res.status}: ${text}`);
+  }
+}
+
+/** Toggle conversation status. */
 export async function toggleStatus(
   convId: number,
-  status: "open" | "resolved"
+  status: "open" | "resolved" | "pending"
 ): Promise<void> {
   await request("POST", `/conversations/${convId}/toggle_status`, { status });
 }

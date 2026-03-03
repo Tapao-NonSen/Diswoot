@@ -13,10 +13,13 @@ export interface ChatwootContactInbox {
 
 export interface ChatwootConversation {
   id: number;
+  uuid: string;
   status: "open" | "pending" | "resolved" | "snoozed";
   last_activity_at: number; // unix timestamp
   inbox_id: number;
   contact_inbox: { source_id: string };
+  /** Populated when CSAT is enabled for the inbox and the conversation is resolved. */
+  csat_survey_link?: string;
 }
 
 export interface ChatwootMessage {
@@ -49,7 +52,20 @@ export interface ChatwootInbox {
   working_hours_enabled: boolean;
   timezone: string;
   out_of_office_message: string;
+  greeting_enabled: boolean;
+  greeting_message: string;
   working_hours: WorkingHour[];
+}
+
+export interface ChatwootAttachment {
+  id: number;
+  message_id: number;
+  file_type: "image" | "audio" | "video" | "file" | "location" | "fallback" | "share" | "story_mention" | "contact";
+  account_id: number;
+  extension: string;
+  data_url: string;
+  thumb_url: string;
+  file_size: number;
 }
 
 /** Shape of webhook POST body from Chatwoot */
@@ -61,6 +77,7 @@ export interface WebhookPayload {
   /** True when this is a private agent note — must NOT be forwarded to the user. */
   private?: boolean;
   content_attributes?: Record<string, unknown>;
+  attachments?: ChatwootAttachment[];
   sender?: {
     type: string;
     id: number;

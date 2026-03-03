@@ -1,4 +1,5 @@
 import { ChannelType, EmbedBuilder, type Message } from "discord.js";
+import { brandFooter } from "../embed";
 import { config } from "../../config";
 import { getMapping, saveMapping } from "../../db/queries";
 import {
@@ -10,12 +11,42 @@ import {
 } from "../../chatwoot/client";
 import { getCachedInbox } from "../../chatwoot/inboxCache";
 import { isWithinWorkingHours, nextOpeningTime } from "../../chatwoot/workingHours";
+import { execute as closeCommand } from "../commands/close";
+import { execute as reopenCommand } from "../commands/reopen";
+import { execute as statusCommand } from "../commands/status";
+import { execute as helpCommand } from "../commands/help";
+
+const PREFIX = "!";
 
 export async function handleDM(message: Message): Promise<void> {
-  // Only process DMs, ignore bots, ignore slash command invocations
+  // Only process DMs, ignore bots
   if (message.channel.type !== ChannelType.DM) return;
   if (message.author.bot) return;
-  if (message.content.startsWith("/")) return;
+
+  // ── Message commands (NOT forwarded to Chatwoot) ─────────────────────────
+  if (message.content.startsWith(PREFIX)) {
+    const parts = message.content.slice(PREFIX.length).trim().split(/\s+/);
+    const cmd = parts[0];
+    const args = parts.slice(1);
+    if (!cmd) return;
+    try {
+      switch (cmd.toLowerCase()) {
+        case "close":  await closeCommand(message, args); break;
+        case "reopen": await reopenCommand(message); break;
+        case "status": await statusCommand(message); break;
+        case "help":   await helpCommand(message); break;
+        // Unknown commands are silently ignored
+      }
+    } catch (err) {
+      console.error(`[dmHandler] Command !${cmd} error:`, err);
+      const embed = new EmbedBuilder()
+        .setColor(config.colors.danger)
+        .setDescription("❌  Something went wrong. Please try again in a moment.")
+        .setFooter(brandFooter());
+      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+    }
+    return; // Do NOT forward command messages to Chatwoot
+  }
 
   const user = message.author;
   const userId = user.id;
@@ -39,11 +70,13 @@ export async function handleDM(message: Message): Promise<void> {
       if (!isOpen) {
         returnsText = nextOpeningTime(inbox.working_hours, inbox.timezone);
 
-        if (config.outsideHours.behavior === "deny") {
+        if (!config.outsideHours.behavior) {
           const embed = new EmbedBuilder()
             .setColor(config.colors.warning)
-            .setDescription(`⏰  ${offlineMsg}`)
-            .setFooter({ text: `Support returns ${returnsText}` });
+            .setTitle("🕐  Outside Support Hours")
+            .setDescription(offlineMsg)
+            .addFields({ name: "Next availability", value: returnsText, inline: true })
+            .setFooter(brandFooter());
           await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
           return; // ← do NOT create or touch the ticket
         }
@@ -53,6 +86,12 @@ export async function handleDM(message: Message): Promise<void> {
     // ── Find or create Chatwoot mapping ─────────────────────────────────────
     let mapping = getMapping(userId);
 
+    // Outside-hours allow mode: keep tickets as "pending" so agents aren't
+    // interrupted; during business hours, open them normally.
+    const reopenStatus = isOpen ? "open" : "pending";
+
+    const isNewContact = !mapping;
+
     if (!mapping) {
       const { contactId, sourceId } = await createContact({
         id: user.id,
@@ -60,14 +99,37 @@ export async function handleDM(message: Message): Promise<void> {
         displayName: user.displayName,
         avatarURL: user.displayAvatarURL({ size: 256 }),
       });
-      const convId = await createConversation(sourceId, contactId);
+      const convId = await createConversation(sourceId, contactId, reopenStatus);
       saveMapping(userId, contactId, sourceId, convId);
       mapping = getMapping(userId)!;
     } else {
-      // Reopen resolved / snoozed conversations automatically
-      const conv = await getConversation(mapping.chatwoot_conv_id);
-      if (conv.status === "resolved" || conv.status === "snoozed") {
-        await toggleStatus(mapping.chatwoot_conv_id, "open");
+      // Fetch existing conversation — may be 404 if deleted from Chatwoot
+      let conv: Awaited<ReturnType<typeof getConversation>> | null = null;
+      try {
+        conv = await getConversation(mapping.chatwoot_conv_id);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("404")) {
+          console.warn(
+            `[dmHandler] Conversation ${mapping.chatwoot_conv_id} not found in Chatwoot — creating a new one`
+          );
+        } else {
+          throw err;
+        }
+      }
+
+      if (conv === null) {
+        // Stale mapping: conversation was deleted from Chatwoot. Create a new
+        // conversation reusing the existing contact + source inbox.
+        const newConvId = await createConversation(
+          mapping.chatwoot_source_id,
+          mapping.chatwoot_contact_id,
+          reopenStatus
+        );
+        saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
+        mapping = getMapping(userId)!;
+      } else if (conv.status === "resolved" || conv.status === "snoozed") {
+        // Reopen resolved / snoozed conversations automatically
+        await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
       }
     }
 
@@ -81,22 +143,37 @@ export async function handleDM(message: Message): Promise<void> {
 
     await sendMessage(mapping.chatwoot_conv_id, content, "incoming");
 
-    // React to confirm receipt
-    await message.react(config.ux.confirmEmoji).catch(() => {});
+    // ── Greeting (first contact only) ────────────────────────────────────────
+    const chatwootGreetingEnabled = inbox?.greeting_enabled ?? false;
+    const chatwootGreetingMsg = inbox?.greeting_message?.trim() ?? "";
+    const greetingMsg = chatwootGreetingMsg || config.ux.greetingMessage;
+    const greetingEnabled = chatwootGreetingEnabled || config.ux.greetingEnabled;
+
+    if (isNewContact && greetingEnabled) {
+      const embed = new EmbedBuilder()
+        .setColor(config.colors.primary)
+        .setTitle("👋  Welcome!")
+        .setDescription(greetingMsg)
+        .setFooter(brandFooter());
+      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+    }
 
     // ── Outside-hours notice (allow mode) ────────────────────────────────────
     if (!isOpen) {
       const embed = new EmbedBuilder()
         .setColor(config.colors.info)
-        .setDescription(`🕐  ${offlineMsg}`)
-        .setFooter({ text: `Support returns ${returnsText}` });
+        .setTitle("🕐  Outside Support Hours")
+        .setDescription(offlineMsg)
+        .addFields({ name: "Next availability", value: returnsText, inline: true })
+        .setFooter(brandFooter());
       await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
     }
   } catch (err) {
     console.error(`[dmHandler] Error for user ${userId}:`, err);
     const embed = new EmbedBuilder()
       .setColor(config.colors.danger)
-      .setDescription("❌  Something went wrong. Please try again in a moment.");
+      .setDescription("❌  Something went wrong. Please try again in a moment.")
+      .setFooter(brandFooter());
     await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
   }
 }

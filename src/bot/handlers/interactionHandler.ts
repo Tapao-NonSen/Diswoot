@@ -1,47 +1,49 @@
-import { ChannelType, type Interaction } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type Interaction } from "discord.js";
 import { Embeds } from "../embed";
-import { execute as closeExecute } from "../commands/close";
-import { execute as reopenExecute } from "../commands/reopen";
-import { execute as statusExecute } from "../commands/status";
-import { execute as helpExecute } from "../commands/help";
-
-const commands: Record<
-  string,
-  (i: Parameters<typeof closeExecute>[0]) => Promise<void>
-> = {
-  close: closeExecute,
-  reopen: reopenExecute,
-  status: statusExecute,
-  help: helpExecute,
-};
+import { hasCsatResponse, saveCsatResponse } from "../../db/queries";
+import { submitCsatRating } from "../../chatwoot/client";
 
 export async function handleInteraction(
   interaction: Interaction
 ): Promise<void> {
-  if (!interaction.isChatInputCommand()) return;
+  // ── CSAT button ───────────────────────────────────────────────────────────
+  if (!interaction.isButton() || !interaction.customId.startsWith("csat_")) return;
 
-  // Only handle commands issued in DMs
-  if (interaction.channel?.type !== ChannelType.DM) {
-    await interaction
-      .reply({
-        embeds: [Embeds.warning("These commands only work in DMs with this bot.")],
-        ephemeral: true,
-      })
-      .catch(() => {});
+  // Format: "csat_{uuid}_{rating}" — uuid contains hyphens so we extract
+  // rating from the end and uuid from the middle.
+  const match = interaction.customId.match(/^csat_(.+)_(\d)$/);
+  const convUuid = match?.[1] ?? "";
+  const rating = Number(match?.[2]);
+
+  if (!convUuid || !rating) {
+    await interaction.reply({ embeds: [Embeds.danger("Invalid rating.")], ephemeral: true }).catch(() => {});
     return;
   }
 
-  const handler = commands[interaction.commandName];
-  if (!handler) return;
-
-  try {
-    await handler(interaction);
-  } catch (err) {
-    console.error(`[interactionHandler] /${interaction.commandName}:`, err);
-    const method = interaction.deferred ? "editReply" : "reply";
-    await interaction[method]({
-      embeds: [Embeds.danger("Something went wrong. Please try again.")],
-      ephemeral: true,
-    }).catch(() => {});
+  if (hasCsatResponse(convUuid)) {
+    await interaction.reply({ embeds: [Embeds.warning("You've already submitted a rating for this ticket.")], ephemeral: true }).catch(() => {});
+    return;
   }
+
+  saveCsatResponse(convUuid, interaction.user.id, rating);
+
+  // Submit to Chatwoot's native CSAT API so it appears in CSAT reports
+  await submitCsatRating(convUuid, rating).catch(() => {});
+
+  // Disable all buttons and show confirmation
+  const stars = "⭐".repeat(rating);
+  const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    [1, 2, 3, 4, 5].map((n) =>
+      new ButtonBuilder()
+        .setCustomId(`csat_done_${n}`)
+        .setLabel(`${n} ⭐`)
+        .setStyle(n === rating ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setDisabled(true)
+    )
+  );
+
+  await interaction.update({
+    embeds: [Embeds.success(`Thanks for your feedback! You rated us **${rating}/5** ${stars}`)],
+    components: [disabledRow],
+  }).catch(() => {});
 }

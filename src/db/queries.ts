@@ -38,6 +38,14 @@ const cleanOldSentStmt = db.prepare(
   "DELETE FROM sent_messages WHERE sent_at < datetime('now', '-1 day')"
 );
 
+const hasCsatStmt = db.prepare<{ conv_uuid: string }, [string]>(
+  "SELECT conv_uuid FROM csat_responses WHERE conv_uuid = ?"
+);
+
+const saveCsatStmt = db.prepare(
+  "INSERT OR IGNORE INTO csat_responses (conv_uuid, discord_user_id, rating) VALUES (?, ?, ?)"
+);
+
 export function cleanOldSentMessages(): void {
   cleanOldSentStmt.run();
 }
@@ -65,4 +73,12 @@ export function isMessageSent(messageId: number): boolean {
 
 export function markMessageSent(messageId: number): void {
   markSentStmt.run(messageId);
+}
+
+export function hasCsatResponse(convUuid: string): boolean {
+  return hasCsatStmt.get(convUuid) !== null;
+}
+
+export function saveCsatResponse(convUuid: string, discordUserId: string, rating: number): void {
+  saveCsatStmt.run(convUuid, discordUserId, rating);
 }

@@ -3,42 +3,55 @@ import { config } from "../config";
 
 const { colors } = config;
 
-/** Pre-styled embed builders using config color palette. */
+/** Builds the branded footer object from BRAND_* env vars. */
+export function brandFooter() {
+  const { brand } = config;
+  const text = brand.footerText || brand.name;
+  return brand.iconUrl ? { text, iconURL: brand.iconUrl } : { text };
+}
+
+/** Pre-styled embed builders using config color palette and brand footer. */
 export const Embeds = {
-  /** Green — ticket opened, reopened, message sent OK. */
+  /** Pastel mint — ticket opened, reopened, positive confirmation. */
   success(description: string) {
     return new EmbedBuilder()
       .setColor(colors.success)
-      .setDescription(`✅  ${description}`);
+      .setDescription(`✅  ${description}`)
+      .setFooter(brandFooter());
   },
 
-  /** Red — ticket closed, error occurred. */
+  /** Pastel rose — ticket closed, error occurred. */
   danger(description: string) {
     return new EmbedBuilder()
       .setColor(colors.danger)
-      .setDescription(`❌  ${description}`);
+      .setDescription(`❌  ${description}`)
+      .setFooter(brandFooter());
   },
 
-  /** Yellow — no-op (already open, already closed). */
+  /** Pastel amber — no-op, already open/closed, non-critical notice. */
   warning(description: string) {
     return new EmbedBuilder()
       .setColor(colors.warning)
-      .setDescription(`⚠️  ${description}`);
+      .setDescription(`⚠️  ${description}`)
+      .setFooter(brandFooter());
   },
 
-  /** Indigo — status display, help. */
+  /** Pastel lavender — status display, informational with timestamp. */
   info(title: string, description?: string) {
     return new EmbedBuilder()
       .setColor(colors.info)
       .setTitle(title)
-      .setDescription(description ?? null);
+      .setDescription(description ?? null)
+      .setFooter(brandFooter())
+      .setTimestamp();
   },
 
-  /** Blue — primary branded embed with optional description. */
+  /** Pastel blue — primary branded embed. */
   primary(title: string, description?: string) {
     return new EmbedBuilder()
       .setColor(colors.primary)
       .setTitle(title)
-      .setDescription(description ?? null);
+      .setDescription(description ?? null)
+      .setFooter(brandFooter());
   },
 };

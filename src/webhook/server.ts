@@ -1,10 +1,13 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BunServer = ReturnType<typeof Bun.serve<any>>;
 import { createHmac, timingSafeEqual } from "crypto";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
+import { brandFooter } from "../bot/embed";
 import { config } from "../config";
 import { getMappingByConv, isMessageSent, markMessageSent } from "../db/queries";
+import { getConversation } from "../chatwoot/client";
 import { discordClient } from "../bot/client";
-import type { WebhookPayload } from "../chatwoot/types";
+import type { ChatwootAttachment, WebhookPayload } from "../chatwoot/types";
 
 // ── HMAC validation ──────────────────────────────────────────────────────────
 function verifySignature(rawBody: string, header: string | null): boolean {
@@ -21,6 +24,23 @@ function verifySignature(rawBody: string, header: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Attachment formatter ──────────────────────────────────────────────────────
+function formatAttachments(attachments: ChatwootAttachment[]): string {
+  return attachments
+    .map((a) => {
+      const emoji =
+        a.file_type === "image" ? "🖼️" :
+        a.file_type === "audio" ? "🎵" :
+        a.file_type === "video" ? "🎬" : "📎";
+      // Try to extract filename from the URL; fall back to extension or generic name
+      const filename =
+        (a.data_url.split("?")[0] ?? "").split("/").pop() ||
+        (a.extension ? `file.${a.extension}` : "attachment");
+      return `${emoji} [${filename}](${a.data_url})`;
+    })
+    .join("\n");
 }
 
 // ── Text chunker ─────────────────────────────────────────────────────────────
@@ -48,11 +68,14 @@ function chunkText(text: string, limit = 2000): string[] {
 async function handleWebhook(payload: WebhookPayload): Promise<void> {
   const { event } = payload;
 
-  // ── Outgoing message (agent → user) ─────────────────────────────────────
+  // ── Outgoing/template message (agent → user) ────────────────────────────
   if (event === "message_created") {
-    if (payload.message_type !== "outgoing") return;
+    if (payload.message_type !== "outgoing" && payload.message_type !== "template") return;
     if (payload.private) return; // skip private/internal agent notes
-    if (!payload.id || !payload.conversation?.id || !payload.content) return;
+
+    const hasContent = !!payload.content;
+    const hasAttachments = (payload.attachments?.length ?? 0) > 0;
+    if (!payload.id || !payload.conversation?.id || (!hasContent && !hasAttachments)) return;
 
     // Dedup — Chatwoot can fire the webhook more than once per message.
     // We check first (synchronous), and only mark as sent after the DM is
@@ -65,10 +88,22 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
     try {
       const user = await discordClient.users.fetch(mapping.discord_user_id);
       const dm = await user.createDM();
-      for (const chunk of chunkText(payload.content)) {
-        await dm.send(chunk);
+
+      // Send text content in chunks
+      if (hasContent) {
+        for (const chunk of chunkText(payload.content!)) {
+          await dm.send(chunk);
+        }
       }
-      // Mark only after a successful delivery to allow retry on failure
+
+      // Send attachments as formatted links
+      if (hasAttachments) {
+        for (const chunk of chunkText(formatAttachments(payload.attachments!))) {
+          await dm.send(chunk);
+        }
+      }
+
+      // Mark only after successful delivery to allow retry on failure
       markMessageSent(payload.id);
     } catch (err) {
       console.error("[webhook] Failed to send DM:", err);
@@ -76,20 +111,106 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
     return;
   }
 
-  // ── Conversation resolved ────────────────────────────────────────────────
+  // ── Conversation status changed ──────────────────────────────────────────
   if (event === "conversation_status_changed") {
-    if (payload.conversation?.status !== "resolved") return;
+    const status = payload.conversation?.status;
+    console.log(`[webhook] conversation_status_changed → status: ${status}, conv: ${payload.conversation?.id}`);
     if (!payload.conversation?.id) return;
 
     const mapping = getMappingByConv(payload.conversation.id);
-    if (!mapping) return;
+    if (!mapping) {
+      console.warn(`[webhook] No mapping found for conv ${payload.conversation.id} — status DM skipped`);
+      return;
+    }
 
     try {
       const user = await discordClient.users.fetch(mapping.discord_user_id);
       const dm = await user.createDM();
-      await dm.send(config.ux.resolvedMessage);
+
+      if (status === "resolved") {
+        await dm.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(config.colors.danger)
+              .setTitle("🎫  Ticket Resolved")
+              .setDescription(config.ux.resolvedMessage)
+              .setFooter(brandFooter())
+              .setTimestamp(),
+          ],
+        });
+        console.log(`[webhook] Sent resolved DM to ${mapping.discord_user_id}`);
+
+        // ── CSAT ────────────────────────────────────────────────────────────
+        if (config.ux.csatEnabled) {
+          const conv = await getConversation(payload.conversation.id);
+          const csatId = conv.uuid;
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setCustomId(`csat_${csatId}_1`).setLabel("1 ⭐").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`csat_${csatId}_2`).setLabel("2 ⭐").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`csat_${csatId}_3`).setLabel("3 ⭐").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`csat_${csatId}_4`).setLabel("4 ⭐").setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`csat_${csatId}_5`).setLabel("5 ⭐").setStyle(ButtonStyle.Success),
+          );
+          await dm.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(config.colors.primary)
+                .setTitle("⭐  Rate Your Experience")
+                .setDescription(config.ux.csatQuestion)
+                .setFooter(brandFooter()),
+            ],
+            components: [row],
+          });
+        }
+        return;
+      }
+
+      if (status === "open" && config.ux.reopenedMessage) {
+        await dm.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(config.colors.success)
+              .setTitle("🎫  Ticket Reopened")
+              .setDescription(config.ux.reopenedMessage)
+              .setFooter(brandFooter())
+              .setTimestamp(),
+          ],
+        });
+        console.log(`[webhook] Sent reopened DM to ${mapping.discord_user_id}`);
+        return;
+      }
+
+      if (status === "snoozed" && config.ux.snoozedMessage) {
+        await dm.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(config.colors.warning)
+              .setTitle("😴  Ticket Snoozed")
+              .setDescription(config.ux.snoozedMessage)
+              .setFooter(brandFooter())
+              .setTimestamp(),
+          ],
+        });
+        console.log(`[webhook] Sent snoozed DM to ${mapping.discord_user_id}`);
+        return;
+      }
+
+      if (status === "pending" && config.ux.pendingMessage) {
+        await dm.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(config.colors.warning)
+              .setTitle("⏳  Awaiting Response")
+              .setDescription(config.ux.pendingMessage)
+              .setFooter(brandFooter())
+              .setTimestamp(),
+          ],
+        });
+        console.log(`[webhook] Sent pending DM to ${mapping.discord_user_id}`);
+        return;
+      }
     } catch (err) {
-      console.error("[webhook] Failed to send resolved notification:", err);
+      console.error("[webhook] Failed to send status DM:", err);
     }
   }
 }

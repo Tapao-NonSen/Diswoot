@@ -33,13 +33,37 @@ export const config = {
       "RESOLVED_MESSAGE",
       "Your support ticket has been resolved. DM us again to reopen it."
     ),
+    greetingEnabled: optional("GREETING_ENABLED", "true") === "true",
+    greetingMessage: optional(
+      "GREETING_MESSAGE",
+      "Thanks for reaching out! A support agent will get back to you as soon as possible."
+    ),
+    csatEnabled: optional("CSAT_ENABLED", "true") === "true",
+    csatQuestion: optional(
+      "CSAT_QUESTION",
+      "How would you rate your support experience?"
+    ),
+    reopenedMessage: optional(
+      "REOPENED_MESSAGE",
+      "Your support ticket has been reopened."
+    ),
+    snoozedMessage: optional("SNOOZED_MESSAGE", ""),
+    pendingMessage: optional("PENDING_MESSAGE", ""),
   },
   colors: {
-    primary: hex("COLOR_PRIMARY", "4A9EFF"),   // blue — general/info
-    success: hex("COLOR_SUCCESS", "57F287"),   // green — ticket opened/reopened
-    danger:  hex("COLOR_DANGER",  "ED4245"),   // red — ticket closed/error
-    warning: hex("COLOR_WARNING", "FEE75C"),   // yellow — already open/closed
-    info:    hex("COLOR_INFO",    "5865F2"),   // indigo — status/help
+    primary: hex("COLOR_PRIMARY", "7BB8F5"),   // pastel blue — general/branded
+    success: hex("COLOR_SUCCESS", "6FD8A0"),   // pastel mint — success/opened
+    danger:  hex("COLOR_DANGER",  "F28B87"),   // pastel rose — closed/error
+    warning: hex("COLOR_WARNING", "F5CF7B"),   // pastel amber — warnings/idle
+    info:    hex("COLOR_INFO",    "A89EF5"),   // pastel lavender — info/status
+  },
+  brand: {
+    /** Brand name shown in embed footers. */
+    name: optional("BRAND_NAME", "Support"),
+    /** Optional URL to a small icon shown in embed footers. */
+    iconUrl: optional("BRAND_ICON_URL", ""),
+    /** Override the full footer text. Defaults to BRAND_NAME. */
+    footerText: optional("BRAND_FOOTER_TEXT", ""),
   },
   presence: {
     pollIntervalMs: Number(optional("PRESENCE_POLL_INTERVAL_MS", "300000")), // 5 min
@@ -47,10 +71,9 @@ export const config = {
     offlineText: optional("PRESENCE_OFFLINE_TEXT", "Support is currently offline"),
   },
   outsideHours: {
-    // "allow" → accept message, forward ticket, then send the inbox's out_of_office_message
-    // "deny"  → reject message with out_of_office_message, don't create a ticket
-    behavior: optional("OUTSIDE_HOURS_BEHAVIOR", "allow") as "allow" | "deny",
-    // Fallback shown if out_of_office_message is blank in Chatwoot
+    // true  → accept and forward the message, then show the out-of-office message
+    // false → show the out-of-office message and do NOT create a ticket
+    behavior: optional("OUTSIDE_HOURS_BEHAVIOR", "true") === "true",
     fallbackMessage: optional(
       "OUTSIDE_HOURS_FALLBACK_MESSAGE",
       "Our support team is currently offline."
