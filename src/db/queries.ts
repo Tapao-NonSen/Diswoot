@@ -82,3 +82,32 @@ export function hasCsatResponse(convUuid: string): boolean {
 export function saveCsatResponse(convUuid: string, discordUserId: string, rating: number): void {
   saveCsatStmt.run(convUuid, discordUserId, rating);
 }
+
+// ── Outside-hours notice tracking ────────────────────────────────────────────
+
+const hasOohNoticeStmt = db.prepare<{ chatwoot_conv_id: number }, [number]>(
+  "SELECT chatwoot_conv_id FROM ooh_notices WHERE chatwoot_conv_id = ?"
+);
+
+const markOohNoticeStmt = db.prepare(
+  "INSERT OR IGNORE INTO ooh_notices (chatwoot_conv_id) VALUES (?)"
+);
+
+const clearOohNoticeStmt = db.prepare(
+  "DELETE FROM ooh_notices WHERE chatwoot_conv_id = ?"
+);
+
+/** Returns true if the outside-hours notice was already sent for this conversation. */
+export function hasOohNotice(convId: number): boolean {
+  return hasOohNoticeStmt.get(convId) !== null;
+}
+
+/** Mark that the outside-hours notice has been sent for this conversation. */
+export function markOohNotice(convId: number): void {
+  markOohNoticeStmt.run(convId);
+}
+
+/** Clear the outside-hours notice flag (e.g. when a ticket is resolved, so a new cycle can start). */
+export function clearOohNotice(convId: number): void {
+  clearOohNoticeStmt.run(convId);
+}

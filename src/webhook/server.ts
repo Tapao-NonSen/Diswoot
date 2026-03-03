@@ -4,8 +4,9 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { brandFooter } from "../bot/embed";
 import { config } from "../config";
-import { getMappingByConv, isMessageSent, markMessageSent } from "../db/queries";
+import { getMappingByConv, isMessageSent, markMessageSent, clearOohNotice } from "../db/queries";
 import { getConversation } from "../chatwoot/client";
+import { getCachedInbox } from "../chatwoot/inboxCache";
 import { discordClient } from "../bot/client";
 import type { ChatwootAttachment, WebhookPayload } from "../chatwoot/types";
 
@@ -73,6 +74,31 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
     if (payload.message_type !== "outgoing" && payload.message_type !== "template") return;
     if (payload.private) return; // skip private/internal agent notes
 
+    // Skip Chatwoot's automatic template messages that the bot already
+    // handles with rich embeds (out-of-office, greeting, CSAT).
+    if (payload.message_type === "template") {
+      const inbox = await getCachedInbox();
+      const payloadMsg = payload.content?.trim();
+      if (payloadMsg && inbox) {
+        const suppressed = [
+          inbox.out_of_office_message?.trim(),
+          inbox.greeting_message?.trim(),
+        ].filter(Boolean);
+
+        if (suppressed.includes(payloadMsg)) {
+          console.log("[webhook] Suppressed auto-template (handled by embed):", payloadMsg.slice(0, 60));
+          return;
+        }
+      }
+
+      // Suppress CSAT survey templates — the bot sends its own interactive
+      // rating embed with buttons on conversation_status_changed → resolved.
+      if (config.ux.csatEnabled && payload.content_attributes?.["csat_survey_link"]) {
+        console.log("[webhook] Suppressed CSAT template (handled by embed)");
+        return;
+      }
+    }
+
     const hasContent = !!payload.content;
     const hasAttachments = (payload.attachments?.length ?? 0) > 0;
     if (!payload.id || !payload.conversation?.id || (!hasContent && !hasAttachments)) return;
@@ -114,7 +140,8 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
   // ── Conversation status changed ──────────────────────────────────────────
   if (event === "conversation_status_changed") {
     const status = payload.conversation?.status;
-    console.log(`[webhook] conversation_status_changed → status: ${status}, conv: ${payload.conversation?.id}`);
+    const prevStatus = payload.conversation?.previous_status;
+    console.log(`[webhook] conversation_status_changed → ${prevStatus} → ${status}, conv: ${payload.conversation?.id}`);
     if (!payload.conversation?.id) return;
 
     const mapping = getMappingByConv(payload.conversation.id);
@@ -128,6 +155,10 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
       const dm = await user.createDM();
 
       if (status === "resolved") {
+        // Clear outside-hours notice flag so a fresh notice can be sent
+        // if the user messages again after the ticket is resolved.
+        clearOohNotice(payload.conversation.id);
+
         await dm.send({
           embeds: [
             new EmbedBuilder()
@@ -165,18 +196,25 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
         return;
       }
 
-      if (status === "open" && config.ux.reopenedMessage) {
-        await dm.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(config.colors.success)
-              .setTitle("🎫  Ticket Reopened")
-              .setDescription(config.ux.reopenedMessage)
-              .setFooter(brandFooter())
-              .setTimestamp(),
-          ],
-        });
-        console.log(`[webhook] Sent reopened DM to ${mapping.discord_user_id}`);
+      if (status === "open") {
+        // Agent picked up or reopened the ticket (from pending, snoozed, or resolved)
+        if (config.ux.reopenedMessage) {
+          const title =
+            prevStatus === "pending" ? "🎫  Ticket Picked Up" :
+            prevStatus === "snoozed" ? "🎫  Ticket Unsnoozed" :
+                                       "🎫  Ticket Reopened";
+          await dm.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(config.colors.success)
+                .setTitle(title)
+                .setDescription(config.ux.reopenedMessage)
+                .setFooter(brandFooter())
+                .setTimestamp(),
+            ],
+          });
+          console.log(`[webhook] Sent ${prevStatus}→open DM to ${mapping.discord_user_id}`);
+        }
         return;
       }
 

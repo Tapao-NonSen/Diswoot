@@ -85,6 +85,8 @@ export interface WebhookPayload {
   conversation?: {
     id: number;
     status: "open" | "pending" | "resolved" | "snoozed";
+    /** Present on conversation_status_changed events — the status before the change. */
+    previous_status?: "open" | "pending" | "resolved" | "snoozed";
   };
   account?: { id: number };
 }

@@ -34,4 +34,11 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS ooh_notices (
+    chatwoot_conv_id INTEGER PRIMARY KEY,
+    sent_at          TEXT DEFAULT (datetime('now'))
+  )
+`);
+
 console.log("[db] SQLite ready.");

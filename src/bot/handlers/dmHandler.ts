@@ -1,7 +1,7 @@
 import { ChannelType, EmbedBuilder, type Message } from "discord.js";
 import { brandFooter } from "../embed";
 import { config } from "../../config";
-import { getMapping, saveMapping } from "../../db/queries";
+import { getMapping, saveMapping, hasOohNotice, markOohNotice } from "../../db/queries";
 import {
   createContact,
   createConversation,
@@ -42,8 +42,9 @@ export async function handleDM(message: Message): Promise<void> {
       const embed = new EmbedBuilder()
         .setColor(config.colors.danger)
         .setDescription("❌  Something went wrong. Please try again in a moment.")
-        .setFooter(brandFooter());
-      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+        .setFooter(brandFooter())
+        .setTimestamp();
+      await message.channel.send({ embeds: [embed]}).catch(() => {});
     }
     return; // Do NOT forward command messages to Chatwoot
   }
@@ -76,8 +77,9 @@ export async function handleDM(message: Message): Promise<void> {
             .setTitle("🕐  Outside Support Hours")
             .setDescription(offlineMsg)
             .addFields({ name: "Next availability", value: returnsText, inline: true })
-            .setFooter(brandFooter());
-          await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+            .setFooter(brandFooter())
+            .setTimestamp();
+          await message.channel.send({ embeds: [embed]}).catch(() => {});
           return; // ← do NOT create or touch the ticket
         }
       }
@@ -118,15 +120,39 @@ export async function handleDM(message: Message): Promise<void> {
       }
 
       if (conv === null) {
-        // Stale mapping: conversation was deleted from Chatwoot. Create a new
-        // conversation reusing the existing contact + source inbox.
-        const newConvId = await createConversation(
-          mapping.chatwoot_source_id,
-          mapping.chatwoot_contact_id,
-          reopenStatus
-        );
-        saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
-        mapping = getMapping(userId)!;
+        // Stale mapping: conversation was deleted from Chatwoot.
+        // Try creating a new conversation with the existing source_id first;
+        // if that also 404s (contact_inbox was wiped), re-create the full
+        // contact + inbox chain from scratch.
+        let newConvId: number | null = null;
+        try {
+          newConvId = await createConversation(
+            mapping.chatwoot_source_id,
+            mapping.chatwoot_contact_id,
+            reopenStatus
+          );
+        } catch (convErr) {
+          if (convErr instanceof Error && convErr.message.includes("404")) {
+            console.warn(
+              `[dmHandler] contact_inbox also stale — re-creating contact chain for ${userId}`
+            );
+            const { contactId, sourceId } = await createContact({
+              id: user.id,
+              username: user.username,
+              displayName: user.displayName,
+              avatarURL: user.displayAvatarURL({ size: 256 }),
+            });
+            newConvId = await createConversation(sourceId, contactId, reopenStatus);
+            saveMapping(userId, contactId, sourceId, newConvId);
+            mapping = getMapping(userId)!;
+          } else {
+            throw convErr;
+          }
+        }
+        if (newConvId !== null && mapping.chatwoot_conv_id !== newConvId) {
+          saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
+          mapping = getMapping(userId)!;
+        }
       } else if (conv.status === "resolved" || conv.status === "snoozed") {
         // Reopen resolved / snoozed conversations automatically
         await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
@@ -153,26 +179,32 @@ export async function handleDM(message: Message): Promise<void> {
       const embed = new EmbedBuilder()
         .setColor(config.colors.primary)
         .setTitle("👋  Welcome!")
+        .setTimestamp()
         .setDescription(greetingMsg)
         .setFooter(brandFooter());
-      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+      await message.channel.send({ embeds: [embed]}).catch(() => {});
     }
 
     // ── Outside-hours notice (allow mode) ────────────────────────────────────
-    if (!isOpen) {
+    // Only remind the user once per ticket so they can freely leave messages.
+    if (!isOpen && !hasOohNotice(mapping.chatwoot_conv_id)) {
+      markOohNotice(mapping.chatwoot_conv_id);
       const embed = new EmbedBuilder()
         .setColor(config.colors.info)
         .setTitle("🕐  Outside Support Hours")
         .setDescription(offlineMsg)
         .addFields({ name: "Next availability", value: returnsText, inline: true })
+        .setTimestamp()
         .setFooter(brandFooter());
-      await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+      await message.channel.send({ embeds: [embed]}).catch(() => {});
     }
   } catch (err) {
     console.error(`[dmHandler] Error for user ${userId}:`, err);
     const embed = new EmbedBuilder()
       .setColor(config.colors.danger)
-      .setDescription("❌  Something went wrong. Please try again in a moment.");
-    await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
+      .setDescription("❌  Something went wrong. Please try again in a moment.")
+      .setTimestamp()
+      .setFooter(brandFooter());
+    await message.channel.send({ embeds: [embed]}).catch(() => {});
   }
 }
