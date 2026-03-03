@@ -17,6 +17,7 @@ export const Embeds = {
     return new EmbedBuilder()
       .setColor(colors.success)
       .setDescription(`✅  ${description}`)
+      .setTimestamp()
       .setFooter(brandFooter());
   },
 
@@ -25,6 +26,7 @@ export const Embeds = {
     return new EmbedBuilder()
       .setColor(colors.danger)
       .setDescription(`❌  ${description}`)
+      .setTimestamp()
       .setFooter(brandFooter());
   },
 
@@ -33,6 +35,7 @@ export const Embeds = {
     return new EmbedBuilder()
       .setColor(colors.warning)
       .setDescription(`⚠️  ${description}`)
+      .setTimestamp()
       .setFooter(brandFooter());
   },
 
@@ -52,6 +55,7 @@ export const Embeds = {
       .setColor(colors.primary)
       .setTitle(title)
       .setDescription(description ?? null)
+      .setTimestamp()
       .setFooter(brandFooter());
   },
 };

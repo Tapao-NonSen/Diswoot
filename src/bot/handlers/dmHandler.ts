@@ -172,8 +172,7 @@ export async function handleDM(message: Message): Promise<void> {
     console.error(`[dmHandler] Error for user ${userId}:`, err);
     const embed = new EmbedBuilder()
       .setColor(config.colors.danger)
-      .setDescription("❌  Something went wrong. Please try again in a moment.")
-      .setFooter(brandFooter());
+      .setDescription("❌  Something went wrong. Please try again in a moment.");
     await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch(() => {});
   }
 }

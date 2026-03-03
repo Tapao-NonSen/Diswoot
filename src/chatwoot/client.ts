@@ -34,13 +34,29 @@ async function request<T>(
 }
 
 /**
- * Chatwoot wraps some responses in { payload: T } and returns others directly.
- * Unwraps safely — if the raw value has a `payload` key we use it,
- * otherwise we treat the whole object as T.
+ * Chatwoot wraps some responses in { payload: T }, { payload: { contact: T } },
+ * or returns them directly. Unwraps safely through all known shapes.
  */
 function unwrap<T>(raw: unknown): T {
   const obj = raw as Record<string, unknown>;
-  return (obj.payload ?? obj) as T;
+
+  // Shape: { payload: { contact: T } }  (some Chatwoot versions)
+  if (obj.payload && typeof obj.payload === "object") {
+    const payload = obj.payload as Record<string, unknown>;
+    if (payload.contact && typeof payload.contact === "object") {
+      return payload.contact as T;
+    }
+    // Shape: { payload: T }
+    return payload as T;
+  }
+
+  // Shape: { contact: T }  (no payload wrapper)
+  if (obj.contact && typeof obj.contact === "object") {
+    return obj.contact as T;
+  }
+
+  // Shape: T directly
+  return obj as T;
 }
 
 // ── Contact helpers ──────────────────────────────────────────────────────────
@@ -106,7 +122,13 @@ export async function createContact(discordUser: {
       },
     });
     console.debug("[createContact] raw:", JSON.stringify(raw));
-    contactId = unwrap<ChatwootContact>(raw).id;
+    const contact = unwrap<ChatwootContact>(raw);
+    contactId = contact.id;
+    if (typeof contactId !== "number" || !Number.isFinite(contactId)) {
+      throw new Error(
+        `Could not extract contact id from POST /contacts response: ${JSON.stringify(raw)}`
+      );
+    }
   } catch (err) {
     // Contact already exists — find it by identifier instead of failing
     if (err instanceof Error && err.message.includes("422")) {
