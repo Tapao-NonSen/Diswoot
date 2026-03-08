@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { brandFooter } from "../bot/embed";
 import { config } from "../config";
-import { getMappingByConv, isMessageSent, markMessageSent, clearOohNotice } from "../db/queries";
+import { getMappingByConv, isMessageSent, markMessageSent, clearOohNotice, consumeBotResolved } from "../db/queries";
 import { getConversation } from "../chatwoot/client";
 import { getCachedInbox } from "../chatwoot/inboxCache";
 import { discordClient } from "../bot/client";
@@ -164,6 +164,14 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
         // Clear outside-hours notice flag so a fresh notice can be sent
         // if the user messages again after the ticket is resolved.
         clearOohNotice(convId);
+
+        // If the bot itself resolved this ticket (via !close command),
+        // consume the flag and skip the duplicate resolved DM — the
+        // command already sent the user a confirmation embed.
+        if (consumeBotResolved(convId)) {
+          console.log(`[webhook] Skipped duplicate resolved DM (bot-resolved) for conv ${convId}`);
+          return;
+        }
 
         await dm.send({
           embeds: [

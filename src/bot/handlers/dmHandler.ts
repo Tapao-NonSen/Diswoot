@@ -170,10 +170,10 @@ export async function handleDM(message: Message): Promise<void> {
     await sendMessage(mapping.chatwoot_conv_id, content, "incoming");
 
     // ── Greeting (first contact only) ────────────────────────────────────────
-    const chatwootGreetingEnabled = inbox?.greeting_enabled ?? false;
-    const chatwootGreetingMsg = inbox?.greeting_message?.trim() ?? "";
-    const greetingMsg = chatwootGreetingMsg || config.ux.greetingMessage;
-    const greetingEnabled = chatwootGreetingEnabled || config.ux.greetingEnabled;
+    // Prefer Chatwoot inbox settings; fall back to env vars only when inbox
+    // data is unavailable (inbox === null).
+    const greetingEnabled = inbox ? inbox.greeting_enabled : config.ux.greetingEnabled;
+    const greetingMsg = (inbox?.greeting_message?.trim()) || config.ux.greetingMessage;
 
     if (isNewContact && greetingEnabled) {
       const embed = new EmbedBuilder()

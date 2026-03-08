@@ -111,3 +111,30 @@ export function markOohNotice(convId: number): void {
 export function clearOohNotice(convId: number): void {
   clearOohNoticeStmt.run(convId);
 }
+
+// ── Bot-resolved tracking (prevent double resolved DMs) ──────────────────────
+
+const markBotResolvedStmt = db.prepare(
+  "INSERT OR IGNORE INTO bot_resolved (chatwoot_conv_id) VALUES (?)"
+);
+
+const consumeBotResolvedStmt = db.prepare(
+  "DELETE FROM bot_resolved WHERE chatwoot_conv_id = ?"
+);
+
+/**
+ * Mark that the bot itself resolved this conversation (e.g. via !close).
+ * The webhook handler can then consume this flag to skip the duplicate DM.
+ */
+export function markBotResolved(convId: number): void {
+  markBotResolvedStmt.run(convId);
+}
+
+/**
+ * Consume (and delete) the bot-resolved flag for this conversation.
+ * Returns true if the flag existed (meaning the bot resolved it).
+ */
+export function consumeBotResolved(convId: number): boolean {
+  const result = consumeBotResolvedStmt.run(convId);
+  return result.changes > 0;
+}

@@ -155,9 +155,7 @@ export async function createConversation(
   status: "open" | "pending" = "open"
 ): Promise<number> {
   const raw = await request<unknown>("POST", "/conversations", {
-    inbox_id: inboxId,
-    contact_id: contactId,
-    contact_inbox_id: sourceId,
+    source_id: sourceId,
     status,
   });
   console.debug("[createConversation] raw:", JSON.stringify(raw));

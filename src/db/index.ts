@@ -41,4 +41,11 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS bot_resolved (
+    chatwoot_conv_id INTEGER PRIMARY KEY,
+    resolved_at      TEXT DEFAULT (datetime('now'))
+  )
+`);
+
 console.log("[db] SQLite ready.");

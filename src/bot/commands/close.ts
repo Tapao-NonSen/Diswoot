@@ -1,6 +1,6 @@
 import { type Message } from "discord.js";
 import { Embeds } from "../embed";
-import { getMapping } from "../../db/queries";
+import { getMapping, markBotResolved } from "../../db/queries";
 import { getConversation, toggleStatus, sendNote } from "../../chatwoot/client";
 
 export async function execute(message: Message, args: string[]): Promise<void> {
@@ -28,6 +28,8 @@ export async function execute(message: Message, args: string[]): Promise<void> {
     : "User closed the ticket via Discord.";
 
   await sendNote(mapping.chatwoot_conv_id, noteContent);
+  // Mark as bot-resolved so the webhook handler skips the duplicate DM
+  markBotResolved(mapping.chatwoot_conv_id);
   await toggleStatus(mapping.chatwoot_conv_id, "resolved");
 
   await message.reply({
