@@ -189,6 +189,10 @@ export async function sendNote(convId: number, content: string): Promise<void> {
  * Submit a CSAT rating via Chatwoot's public survey API so it appears in
  * native CSAT reports. Uses the conversation UUID from csat_survey_link.
  * No API token required — this is a public endpoint.
+ *
+ * Chatwoot expects a PATCH (update) on the existing `input_csat` message
+ * created when the conversation was resolved. The body shape must match the
+ * permitted params: `{ message: { submitted_values: { csat_survey_response } } }`.
  */
 export async function submitCsatRating(
   conversationUuid: string,
@@ -197,7 +201,7 @@ export async function submitCsatRating(
 ): Promise<void> {
   const url = `${config.chatwoot.baseUrl}/public/api/v1/csat_survey/${conversationUuid}`;
   const res = await fetch(url, {
-    method: "POST",
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       message: {
@@ -209,7 +213,7 @@ export async function submitCsatRating(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Chatwoot CSAT POST → ${res.status}: ${text}`);
+    throw new Error(`Chatwoot CSAT PATCH → ${res.status}: ${text}`);
   }
 }
 

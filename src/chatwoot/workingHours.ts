@@ -1,7 +1,5 @@
 import type { WorkingHour } from "./types";
 
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-
 interface TimeInZone {
   dayOfWeek: number;
   hour: number;
@@ -62,13 +60,16 @@ export function isWithinWorkingHours(
 }
 
 /**
- * Returns a human-readable string for when support next opens.
- * Examples: "today at 09:00", "tomorrow at 09:00", "Mon at 09:00"
+ * Returns the next opening time as a Discord relative timestamp string.
+ * Uses `<t:UNIX:R>` (relative) and `<t:UNIX:f>` (full date+time) so every
+ * user sees the correct time in their own timezone.
+ * Falls back to a plain-text string when no opening time can be determined.
  */
 export function nextOpeningTime(
   hours: WorkingHour[],
   timezone: string
 ): string {
+  const now = new Date();
   const { dayOfWeek, hour, minute } = getCurrentTimeInZone(timezone);
   const currentMinutes = hour * 60 + minute;
 
@@ -81,21 +82,80 @@ export function nextOpeningTime(
 
     if (entry.open_all_day) {
       if (offset === 0) return "now";
-      if (offset === 1) return "tomorrow";
-      return DAY_NAMES[checkDay] ?? "soon";
+      // Open all day → use midnight (00:00) as the opening time
+      const unix = getUnixForOffset(now, offset, 0, 0, timezone);
+      return `<t:${unix}:R> (<t:${unix}:f>)`;
     }
 
     const openAt = (entry.open_hour ?? 0) * 60 + (entry.open_minutes ?? 0);
     // Today: skip if we're already past (or at) the opening time
     if (offset === 0 && currentMinutes >= openAt) continue;
 
-    const hh = String(entry.open_hour ?? 0).padStart(2, "0");
-    const mm = String(entry.open_minutes ?? 0).padStart(2, "0");
-
-    if (offset === 0) return `today at ${hh}:${mm}`;
-    if (offset === 1) return `tomorrow at ${hh}:${mm}`;
-    return `${DAY_NAMES[checkDay]} at ${hh}:${mm}`;
+    const unix = getUnixForOffset(
+      now, offset, entry.open_hour ?? 0, entry.open_minutes ?? 0, timezone
+    );
+    return `<t:${unix}:R> (<t:${unix}:f>)`;
   }
 
   return "soon";
+}
+
+/**
+ * Compute a Unix timestamp (seconds) for a target time that is `offsetDays`
+ * days from now in the given timezone, at the specified hour and minute.
+ */
+function getUnixForOffset(
+  now: Date,
+  offsetDays: number,
+  targetHour: number,
+  targetMinute: number,
+  timezone: string,
+): number {
+  // Build an approximate target date in UTC, then adjust so it hits the
+  // desired wall-clock hour in the inbox's timezone.
+  const target = new Date(now.getTime() + offsetDays * 86_400_000);
+
+  // Format target date parts in the inbox timezone to get the calendar date
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const dateParts = fmt.format(target);        // "2026-03-09"
+  const iso = `${dateParts}T${String(targetHour).padStart(2, "0")}:${String(targetMinute).padStart(2, "0")}:00`;
+
+  // Use a formatter to resolve the UTC offset for that exact wall-clock time
+  const utcGuess = new Date(iso + "Z");
+
+  // Get the offset between UTC and the target timezone at this moment
+  const inTz = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(utcGuess);
+
+  const get = (type: string) => parseInt(
+    inTz.find((p) => p.type === type)?.value ?? "0", 10
+  );
+
+  const tzHour = get("hour") === 24 ? 0 : get("hour");
+  const tzMinute = get("minute");
+
+  // Difference in minutes between what we wanted and what the timezone shows
+  const wantedMinutes = targetHour * 60 + targetMinute;
+  const gotMinutes = tzHour * 60 + tzMinute;
+  let diffMinutes = gotMinutes - wantedMinutes;
+
+  // Normalize to ±720 minutes to handle day-boundary wraps
+  if (diffMinutes > 720) diffMinutes -= 1440;
+  if (diffMinutes < -720) diffMinutes += 1440;
+
+  // Adjust: if timezone showed a later time than desired, we went too far → subtract
+  const corrected = new Date(utcGuess.getTime() - diffMinutes * 60_000);
+  return Math.floor(corrected.getTime() / 1000);
 }

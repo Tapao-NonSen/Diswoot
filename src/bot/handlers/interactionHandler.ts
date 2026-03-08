@@ -28,7 +28,9 @@ export async function handleInteraction(
   saveCsatResponse(convUuid, interaction.user.id, rating);
 
   // Submit to Chatwoot's native CSAT API so it appears in CSAT reports
-  await submitCsatRating(convUuid, rating).catch(() => {});
+  await submitCsatRating(convUuid, rating).catch((err) => {
+    console.error(`[csat] Failed to submit rating to Chatwoot for ${convUuid}:`, err);
+  });
 
   // Disable all buttons and show confirmation
   const stars = "⭐".repeat(rating);

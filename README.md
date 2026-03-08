@@ -73,39 +73,86 @@ cp .env.example .env
 Copy `.env.example` to `.env` and fill in the values:
 
 ```env
-# Required
-DISCORD_TOKEN=          # Bot token from Discord Developer Portal
-DISCORD_CLIENT_ID=      # Application ID from Discord Developer Portal
-CHATWOOT_BASE_URL=      # e.g. https://app.chatwoot.com (no trailing slash)
-CHATWOOT_ACCOUNT_ID=    # Numeric account ID (visible in the URL when logged in)
-CHATWOOT_API_TOKEN=     # Profile → Access Token
-CHATWOOT_INBOX_ID=      # Settings → Inboxes → your API inbox → Settings → ID
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔐  REQUIRED — Core credentials & connections
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Webhook
+# Discord
+DISCORD_TOKEN=                  # Bot token — Discord Developer Portal > Bot > Token
+DISCORD_CLIENT_ID=              # Application ID — Discord Developer Portal > General Information
+
+# Chatwoot
+CHATWOOT_BASE_URL=              # e.g. https://app.chatwoot.com  (no trailing slash)
+CHATWOOT_ACCOUNT_ID=            # Numeric account ID (visible in the URL when logged in)
+CHATWOOT_API_TOKEN=             # Profile > Access Token
+CHATWOOT_INBOX_ID=              # Settings > Inboxes > your API inbox > Settings > ID
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🌐  Webhook — Chatwoot will POST events here
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 WEBHOOK_PORT=3000
-WEBHOOK_SECRET=         # Copy from Chatwoot webhook HMAC token (recommended)
+WEBHOOK_SECRET=                 # Optional HMAC secret (leave blank if not using)
 
-# Optional — UX
-CONFIRM_EMOJI=✅
-RESOLVED_MESSAGE=Your support ticket has been resolved. DM us again to reopen it.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🏷️  Branding — footer shown on every embed (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Optional — embed colors (hex without #)
-COLOR_PRIMARY=4A9EFF
-COLOR_SUCCESS=57F287
-COLOR_DANGER=ED4245
-COLOR_WARNING=FEE75C
-COLOR_INFO=5865F2
+BRAND_NAME=Support              # Short name shown in every embed footer
+BRAND_ICON_URL=                 # Optional URL to a small icon (e.g. your logo)
+BRAND_FOOTER_TEXT=              # Override the full footer text (defaults to BRAND_NAME)
 
-# Optional — bot presence
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🎨  Embed Colors — hex without # prefix (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COLOR_PRIMARY=7BB8F5            # pastel blue — general/branded
+COLOR_SUCCESS=6FD8A0            # pastel mint — success/opened
+COLOR_DANGER=F28B87             # pastel rose — closed/error
+COLOR_WARNING=F5CF7B            # pastel amber — warnings/idle
+COLOR_INFO=A89EF5               # pastel lavender — info/status
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🟢  Presence — bot status synced from Chatwoot working hours (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 PRESENCE_POLL_INTERVAL_MS=300000
 PRESENCE_ONLINE_TEXT=DM to open a support ticket
 PRESENCE_OFFLINE_TEXT=Support is currently offline
 
-# Optional — outside working hours
-# "allow" → accept message + send out-of-office notice (default)
-# "deny"  → reject message with out-of-office notice, no ticket created
-OUTSIDE_HOURS_BEHAVIOR=allow
-# Fallback only used if Chatwoot inbox out-of-office message is blank
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 💬  UX — Messages & user-facing text (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONFIRM_EMOJI=✅
+RESOLVED_MESSAGE=Your support ticket has been resolved. DM us again to reopen it.
+
+# Greeting — sent the very first time a user opens a ticket
+# Prefers Chatwoot inbox "Greeting message" (Inbox Settings → Configuration).
+# These env vars are fallback only when the Chatwoot value is blank/disabled.
+GREETING_ENABLED=true
+GREETING_MESSAGE=Thanks for reaching out! A support agent will get back to you as soon as possible.
+
+# CSAT — star-rating buttons sent after a ticket is resolved
+CSAT_ENABLED=true
+CSAT_QUESTION=How would you rate your support experience?
+
+# Status change notifications — leave blank to disable each one
+# Sent when an agent snoozes a ticket
+SNOOZED_MESSAGE="Your ticket has been snoozed. We'll follow up with you soon."
+# Sent when a ticket moves to "pending" (waiting for agent assignment)
+PENDING_MESSAGE="Your ticket is queued and will be assigned to an agent shortly."
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🕐  Outside Working Hours (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# The out-of-office message shown to users is pulled from Chatwoot:
+#   Inbox Settings → Configuration → Out of office message
+#
+# true  — accept and forward the message, then show the out-of-office message (default)
+# false — show the out-of-office message and do NOT create a ticket
+
+OUTSIDE_HOURS_BEHAVIOR=true
 OUTSIDE_HOURS_FALLBACK_MESSAGE=Our support team is currently offline.
 ```
 
