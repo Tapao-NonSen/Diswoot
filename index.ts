@@ -9,6 +9,10 @@ import { startWebhookServer } from "./src/webhook/server";
 import { startPresencePoller } from "./src/bot/presence";
 import { startHealthCheck, stopHealthCheck } from "./src/chatwoot/health";
 import { startRetryWorker, stopRetryWorker } from "./src/lib/retryQueue";
+import { loadPlugins, shutdownPlugins } from "./src/plugins";
+
+// ── Plugins ─────────────────────────────────────────────────────────────────
+await loadPlugins();
 
 // ── Chatwoot health check & retry worker ────────────────────────────────────
 startHealthCheck();
@@ -34,6 +38,7 @@ function shutdown() {
   console.log("\n[main] Shutting down…");
   stopHealthCheck();
   stopRetryWorker();
+  shutdownPlugins();
   discordClient.destroy();
   webhookServer.stop();
   process.exit(0);

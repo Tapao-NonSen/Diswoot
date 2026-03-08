@@ -184,6 +184,64 @@ OUTSIDE_HOURS_FALLBACK_MESSAGE=Our support team is currently offline.
 > enabled, the bot always reopens the user's last conversation regardless of
 > `REOPEN_WINDOW_HOURS`.
 
+### Optional: Plugins
+
+Diswoot has a **plugin system** for extending functionality without modifying
+core code. Plugins can enrich Chatwoot contacts with data from external
+systems (e.g. email, user IDs from your platform).
+
+Plugins live in `src/plugins/`. Each plugin is auto-loaded at startup — if
+its required env vars are missing, it disables itself silently.
+
+```env
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# �  Singlty Plugin (optional — leave blank to disable)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SINGLTY_API_URL=                # Backend URL, e.g. https://api.singlty.com
+SINGLTY_API_KEY=                # Must match INTERNAL_API_KEY in the Backend .env
+```
+
+> **Backend setup**: Set `INTERNAL_API_KEY` in your Singlty Backend `.env` to a
+> strong random secret. Use the same value as `SINGLTY_API_KEY` here. The plugin
+> calls `GET /internal/users/by-discord/:discordId` with an `x-api-key` header.
+
+#### Writing a custom plugin
+
+Create a file in `src/plugins/` that exports a `DiswootPlugin` object:
+
+```typescript
+// src/plugins/my-platform.ts
+import type { DiswootPlugin } from "./types";
+
+export const myPlugin: DiswootPlugin = {
+  name: "my-platform",
+
+  init() {
+    const apiKey = process.env.MY_PLATFORM_KEY ?? "";
+    if (!apiKey) return false; // disable if not configured
+    return true;
+  },
+
+  async enrichContact(user) {
+    // Look up the user in your platform by user.id (Discord snowflake)
+    // Return { email, customAttributes } to merge into the Chatwoot contact
+    return {
+      email: "user@example.com",
+      customAttributes: { platform_id: "12345" },
+    };
+  },
+};
+```
+
+Then register it in `src/plugins/index.ts`:
+
+```typescript
+import { myPlugin } from "./my-platform";
+
+const ALL_PLUGINS: DiswootPlugin[] = [singltyPlugin, myPlugin];
+```
+
 ---
 
 ## Usage
@@ -284,10 +342,15 @@ diswoot/
 │   │       └── interactionHandler.ts # CSAT modal + slash command router
 │   ├── chatwoot/
 │   │   ├── client.ts           # Chatwoot REST API client (v4.11.1)
+│   │   ├── contact-attributes.ts # Shared contact identifier & attribute keys
 │   │   ├── health.ts           # Periodic reachability check
 │   │   ├── types.ts            # TypeScript interfaces
 │   │   ├── workingHours.ts     # Working hours / next-opening logic
 │   │   └── inboxCache.ts       # 5-minute TTL inbox config cache
+│   ├── plugins/
+│   │   ├── types.ts            # DiswootPlugin interface
+│   │   ├── index.ts            # Plugin registry & lifecycle
+│   │   └── singlty.ts          # (Example) Singlty Backend enrichment
 │   ├── db/
 │   │   ├── index.ts            # SQLite init + migrations
 │   │   └── queries.ts          # Prepared statement helpers
@@ -323,6 +386,7 @@ All endpoints are verified against **Chatwoot v4.11.1** ([swagger.json](https://
 |----------|--------|---------|
 | `/api/v1/accounts/{id}/contacts/search` | GET | Find existing contact by Discord ID |
 | `/api/v1/accounts/{id}/contacts` | POST | Create new contact |
+| `/api/v1/accounts/{id}/contacts/{id}` | PUT | Update contact (name, email, custom_attributes) |
 | `/api/v1/accounts/{id}/contacts/{id}/contact_inboxes` | POST | Link contact to inbox |
 | `/api/v1/accounts/{id}/conversations` | POST | Create conversation |
 | `/api/v1/accounts/{id}/conversations/{id}/messages` | POST | Send message / private note |
@@ -330,4 +394,27 @@ All endpoints are verified against **Chatwoot v4.11.1** ([swagger.json](https://
 | `/api/v1/accounts/{id}/conversations/{id}` | GET | Fetch conversation metadata |
 | `/api/v1/accounts/{id}/inboxes/{id}` | GET | Fetch inbox config (CSAT, lock, hours) |
 | `/public/api/v1/csat_survey/{uuid}` | PATCH | Submit native CSAT rating |
+
+---
+
+## Contact attribute alignment
+
+Diswoot and web widgets both create / identify Chatwoot contacts.
+To ensure agents see a single, merged view, both sides should use the
+**same `identifier` format and `custom_attributes` keys**.
+
+| Field | Diswoot (Discord bot) | Web Widget (example) | Result in Chatwoot |
+|-------|-----------------------|----------------------|---------------------|
+| `identifier` | `discord:{discordId}` | `discord:{discordId}` (if linked) or `user:{userId}` | Same contact when Discord is linked |
+| `name` | `displayName` (guild nick > username) | `globalName > username > email` | Best available name |
+| `email` | Via plugin enrichment (if configured) | From auth session | ✅ |
+| `custom_attributes.user_id` | Via plugin enrichment (if configured) | Always set | Platform user ID |
+| `custom_attributes.discord_id` | Always set | Set when linked | Discord snowflake |
+| `custom_attributes.discord_username` | Always set | Set when linked | Raw Discord username |
+| `custom_attributes.discord_display_name` | Always set | Set when linked | Display name |
+| `custom_attributes.source` | `"discord"` | `"web"` | Origin of the contact |
+
+Key files:
+- **Diswoot**: `src/chatwoot/contact-attributes.ts` — identifier helpers, `ATTR` keys, `pickDisplayName`
+- **Plugins**: `src/plugins/` — enrich contacts with platform-specific data (email, user_id, etc.)
 

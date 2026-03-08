@@ -5,6 +5,12 @@ import type {
   ChatwootMessage,
   ChatwootInbox,
 } from "./types";
+import {
+  discordIdentifier,
+  pickDisplayName,
+  ATTR,
+} from "./contact-attributes";
+import { runEnrichContact } from "../plugins";
 
 const { baseUrl, accountId, apiToken, inboxId } = config.chatwoot;
 const base = `${baseUrl}/api/v1/accounts/${accountId}`;
@@ -65,7 +71,7 @@ function unwrap<T>(raw: unknown): T {
 async function findContactByDiscordId(
   discordId: string
 ): Promise<ChatwootContact | null> {
-  const identifier = `discord:${discordId}`;
+  const identifier = discordIdentifier(discordId);
   const data = await request<{
     payload: Array<ChatwootContact & { identifier?: string }>;
   }>(
@@ -99,6 +105,14 @@ async function createContactInbox(contactId: number): Promise<string> {
   );
 }
 
+/** Update an existing Chatwoot contact (name, email, custom_attributes, etc.). */
+async function updateContact(
+  contactId: number,
+  payload: Record<string, unknown>
+): Promise<void> {
+  await request("PUT", `/contacts/${contactId}`, payload);
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /** Create a Chatwoot contact for a Discord user, or reuse an existing one. */
@@ -110,16 +124,31 @@ export async function createContact(discordUser: {
 }): Promise<{ contactId: number; sourceId: string }> {
   let contactId: number;
 
+  // Run plugin enrichment hooks (e.g. Singlty backend → email + user_id)
+  const enrichment = await runEnrichContact(discordUser);
+
+  // Best display name: displayName (guild nick) > username
+  const name = pickDisplayName({
+    displayName: discordUser.displayName,
+    username: discordUser.username,
+  });
+
+  // custom_attributes visible in the agent sidebar — same keys as the web widget
+  const customAttrs: Record<string, string> = {
+    [ATTR.DISCORD_ID]: discordUser.id,
+    [ATTR.DISCORD_USERNAME]: discordUser.username,
+    [ATTR.DISCORD_DISPLAY_NAME]: discordUser.displayName,
+    [ATTR.SOURCE]: "discord",
+    ...enrichment.customAttributes,
+  };
+
   try {
-    // Create contact WITHOUT inbox_id to get a simple, predictable response shape
     const raw = await request<unknown>("POST", "/contacts", {
-      name: discordUser.username,
-      identifier: `discord:${discordUser.id}`,
+      name,
+      identifier: discordIdentifier(discordUser.id),
       avatar_url: discordUser.avatarURL ?? undefined,
-      additional_attributes: {
-        discord_id: discordUser.id,
-        discord_username: discordUser.username,
-      },
+      email: enrichment.email ?? undefined,
+      custom_attributes: customAttrs,
     });
     console.debug("[createContact] raw:", JSON.stringify(raw));
     const contact = unwrap<ChatwootContact>(raw);
@@ -130,7 +159,7 @@ export async function createContact(discordUser: {
       );
     }
   } catch (err) {
-    // Contact already exists — find it by identifier instead of failing
+    // Contact already exists — find it and update attributes to stay aligned.
     if (err instanceof Error && err.message.includes("422")) {
       const found = await findContactByDiscordId(discordUser.id);
       if (!found) {
@@ -139,6 +168,14 @@ export async function createContact(discordUser: {
         );
       }
       contactId = found.id;
+
+      // Sync name, avatar, email, and custom_attributes to latest values
+      await updateContact(contactId, {
+        name,
+        avatar_url: discordUser.avatarURL ?? undefined,
+        email: enrichment.email ?? undefined,
+        custom_attributes: customAttrs,
+      });
     } else {
       throw err;
     }
