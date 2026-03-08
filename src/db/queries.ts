@@ -46,6 +46,10 @@ const saveCsatStmt = db.prepare(
   "INSERT OR IGNORE INTO csat_responses (conv_uuid, discord_user_id, rating) VALUES (?, ?, ?)"
 );
 
+const updateCsatFeedbackStmt = db.prepare(
+  "UPDATE csat_responses SET feedback_message = ? WHERE conv_uuid = ?"
+);
+
 export function cleanOldSentMessages(): void {
   cleanOldSentStmt.run();
 }
@@ -81,6 +85,11 @@ export function hasCsatResponse(convUuid: string): boolean {
 
 export function saveCsatResponse(convUuid: string, discordUserId: string, rating: number): void {
   saveCsatStmt.run(convUuid, discordUserId, rating);
+}
+
+/** Update the feedback comment for an existing CSAT response. */
+export function updateCsatFeedback(convUuid: string, feedbackMessage: string): void {
+  updateCsatFeedbackStmt.run(feedbackMessage, convUuid);
 }
 
 // ── Outside-hours notice tracking ────────────────────────────────────────────
@@ -137,4 +146,83 @@ export function markBotResolved(convId: number): void {
 export function consumeBotResolved(convId: number): boolean {
   const result = consumeBotResolvedStmt.run(convId);
   return result.changes > 0;
+}
+
+// ── Retry queue ──────────────────────────────────────────────────────────────
+
+export interface RetryJob {
+  id: number;
+  type: "message" | "csat";
+  payload: string;
+  attempts: number;
+  max_retries: number;
+  created_at: string;
+  next_at: string;
+}
+
+const enqueueStmt = db.prepare(
+  `INSERT INTO retry_queue (type, payload, max_retries)
+   VALUES (?, ?, ?)`
+);
+
+const pendingJobsStmt = db.prepare<RetryJob, []>(
+  `SELECT * FROM retry_queue
+   WHERE attempts < max_retries AND next_at <= datetime('now')
+   ORDER BY created_at ASC
+   LIMIT 50`
+);
+
+// Exponential back-off: 1m, 2m, 4m, 8m, … capped at 60m
+// Note: SQLite has no POWER() — use bit-shift (1 << attempts) instead.
+const bumpAttemptExpStmt = db.prepare(
+  `UPDATE retry_queue
+   SET attempts = attempts + 1,
+       next_at  = datetime('now', '+' || MIN(1 << attempts, 60) || ' minutes')
+   WHERE id = ?`
+);
+
+const deleteJobStmt = db.prepare(
+  "DELETE FROM retry_queue WHERE id = ?"
+);
+
+const deleteDeadJobsStmt = db.prepare(
+  "DELETE FROM retry_queue WHERE attempts >= max_retries"
+);
+
+const queueSizeStmt = db.prepare<{ cnt: number }, []>(
+  "SELECT COUNT(*) as cnt FROM retry_queue"
+);
+
+/** Add a job to the retry queue. */
+export function enqueueRetry(
+  type: "message" | "csat",
+  payload: Record<string, unknown>,
+  maxRetries = 10
+): void {
+  enqueueStmt.run(type, JSON.stringify(payload), maxRetries);
+}
+
+/** Get all jobs that are due for retry. */
+export function getPendingRetryJobs(): RetryJob[] {
+  return pendingJobsStmt.all();
+}
+
+/** Bump the attempt count and push next_at with exponential back-off. */
+export function bumpRetryAttempt(jobId: number): void {
+  bumpAttemptExpStmt.run(jobId);
+}
+
+/** Remove a successfully processed job. */
+export function deleteRetryJob(jobId: number): void {
+  deleteJobStmt.run(jobId);
+}
+
+/** Purge jobs that have exceeded max retries. */
+export function purgeDeadRetryJobs(): void {
+  deleteDeadJobsStmt.run();
+}
+
+/** Return the number of jobs currently in the retry queue. */
+export function getRetryQueueSize(): number {
+  return queueSizeStmt.get()?.cnt ?? 0;
 }

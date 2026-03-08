@@ -39,9 +39,15 @@ export const config = {
       "Thanks for reaching out! A support agent will get back to you as soon as possible."
     ),
     csatEnabled: optional("CSAT_ENABLED", "true") === "true",
+    csatButtonLabel: optional("CSAT_BUTTON_LABEL", "⭐ Rate us"),
     csatQuestion: optional(
       "CSAT_QUESTION",
       "How would you rate your support experience?"
+    ),
+    csatCommentEnabled: optional("CSAT_COMMENT_ENABLED", "true") === "true",
+    csatCommentPlaceholder: optional(
+      "CSAT_COMMENT_PLACEHOLDER",
+      "Share your thoughts… (optional)"
     ),
     reopenedMessage: optional(
       "REOPENED_MESSAGE",
@@ -80,6 +86,8 @@ export const config = {
     ),
   },
   tickets: {
+    /** Hours after resolution during which a DM reopens the existing ticket.
+     *  After this window, a new conversation is created instead (if inbox allows). */
     reopenWindowHours: Number(optional("REOPEN_WINDOW_HOURS", "0")),
   },
 } as const;

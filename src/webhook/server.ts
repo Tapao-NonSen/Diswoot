@@ -14,12 +14,14 @@ import type { ChatwootAttachment, WebhookPayload } from "../chatwoot/types";
 function verifySignature(rawBody: string, header: string | null): boolean {
   if (!config.webhook.secret) return true; // no secret configured → skip check
   if (!header) return false;
+  // Some Chatwoot versions prefix the header with "sha256=" — strip it
+  const receivedHex = header.replace(/^sha256=/, "");
   const expected = createHmac("sha256", config.webhook.secret)
     .update(rawBody)
     .digest("hex");
   try {
     return timingSafeEqual(
-      Buffer.from(header, "hex"),
+      Buffer.from(receivedHex, "hex"),
       Buffer.from(expected, "hex")
     );
   } catch {
@@ -68,6 +70,11 @@ function chunkText(text: string, limit = 2000): string[] {
 
 async function handleWebhook(payload: WebhookPayload): Promise<void> {
   const { event } = payload;
+
+  // Ignore events from other Chatwoot accounts
+  if (payload.account?.id && String(payload.account.id) !== config.chatwoot.accountId) {
+    return;
+  }
 
   // ── Outgoing/template message (agent → user) ────────────────────────────
   if (event === "message_created") {
@@ -186,22 +193,34 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
         console.log(`[webhook] Sent resolved DM to ${mapping.discord_user_id}`);
 
         // ── CSAT ────────────────────────────────────────────────────────────
-        if (config.ux.csatEnabled) {
-          const conv = await getConversation(convId);
+        // Respect Chatwoot inbox csat_survey_enabled first, fall back to env
+        const inbox = await getCachedInbox();
+        const csatEnabled = inbox?.csat_survey_enabled ?? config.ux.csatEnabled;
+
+        if (csatEnabled) {
+          let conv;
+          try {
+            conv = await getConversation(convId);
+          } catch (err) {
+            console.error(`[webhook] Failed to fetch conversation ${convId} for CSAT:`, err);
+            return;
+          }
           const csatId = conv.uuid;
+
+          const csatQuestion = config.ux.csatQuestion;
+
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setCustomId(`csat_${csatId}_1`).setLabel("1 ⭐").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`csat_${csatId}_2`).setLabel("2 ⭐").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`csat_${csatId}_3`).setLabel("3 ⭐").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`csat_${csatId}_4`).setLabel("4 ⭐").setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`csat_${csatId}_5`).setLabel("5 ⭐").setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`csat_rate_${csatId}`)
+              .setLabel(config.ux.csatButtonLabel)
+              .setStyle(ButtonStyle.Primary),
           );
           await dm.send({
             embeds: [
               new EmbedBuilder()
                 .setColor(config.colors.primary)
                 .setTitle("⭐  Rate Your Experience")
-                .setDescription(config.ux.csatQuestion)
+                .setDescription(csatQuestion)
                 .setTimestamp()
                 .setFooter(brandFooter()),
             ],
@@ -212,7 +231,11 @@ async function handleWebhook(payload: WebhookPayload): Promise<void> {
       }
 
       if (status === "open") {
-        // Agent picked up or reopened the ticket (from pending, snoozed, or resolved)
+        // Agent picked up or reopened the ticket (from pending, snoozed, or resolved).
+        // Skip if there's no previous_status — this is a newly created conversation,
+        // not a status change. The DM handler already greets the user.
+        if (!prevStatus) return;
+
         if (config.ux.reopenedMessage) {
           const title =
             prevStatus === "pending" ? "🎫  Ticket Picked Up" :

@@ -55,6 +55,10 @@ export interface ChatwootInbox {
   greeting_enabled: boolean;
   greeting_message: string;
   working_hours: WorkingHour[];
+  /** Whether CSAT collection is enabled for this inbox (Chatwoot setting). */
+  csat_survey_enabled?: boolean;
+  /** Chatwoot 4.x — when true only one conversation per contact+inbox is allowed. */
+  lock_to_single_conversation?: boolean;
 }
 
 export interface ChatwootAttachment {

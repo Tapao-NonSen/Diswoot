@@ -22,12 +22,11 @@ export async function updatePresence(): Promise<void> {
       ],
     });
   } else {
-    const next = nextOpeningTime(inbox.working_hours, inbox.timezone);
     discordClient.user.setPresence({
       status: "idle",
       activities: [
         {
-          name: `${config.presence.offlineText} · Returns ${next}`,
+          name: `${config.presence.offlineText}`,
           type: ActivityType.Watching,
         },
       ],
@@ -36,6 +35,12 @@ export async function updatePresence(): Promise<void> {
 }
 
 export function startPresencePoller(): void {
-  updatePresence();
-  setInterval(updatePresence, config.presence.pollIntervalMs);
+  updatePresence().catch((err) =>
+    console.error("[presence] Initial update failed:", err)
+  );
+  setInterval(() => {
+    updatePresence().catch((err) =>
+      console.error("[presence] Update failed:", err)
+    );
+  }, config.presence.pollIntervalMs);
 }

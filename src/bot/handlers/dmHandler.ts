@@ -11,6 +11,8 @@ import {
 } from "../../chatwoot/client";
 import { getCachedInbox } from "../../chatwoot/inboxCache";
 import { isWithinWorkingHours, nextOpeningTime } from "../../chatwoot/workingHours";
+import { isChatwootHealthy } from "../../chatwoot/health";
+import { enqueueMessage } from "../../lib/retryQueue";
 import { execute as closeCommand } from "../commands/close";
 import { execute as reopenCommand } from "../commands/reopen";
 import { execute as statusCommand } from "../commands/status";
@@ -51,6 +53,33 @@ export async function handleDM(message: Message): Promise<void> {
 
   const user = message.author;
   const userId = user.id;
+
+  // ── Build message content early so we can queue it if Chatwoot is down ───
+  const msgParts: string[] = [];
+  if (message.content.trim()) msgParts.push(message.content.trim());
+  for (const att of message.attachments.values()) {
+    msgParts.push(`[Attachment: ${att.name}](${att.url})`);
+  }
+  const content = msgParts.join("\n") || "(empty message)";
+
+  // ── Fast-path: Chatwoot known to be down ─────────────────────────────────
+  // If the health check already knows Chatwoot is unreachable AND the user
+  // already has an existing mapping, queue the message and inform them.
+  const existingMapping = getMapping(userId);
+  if (!isChatwootHealthy() && existingMapping) {
+    enqueueMessage(existingMapping.chatwoot_conv_id, content);
+    const embed = new EmbedBuilder()
+      .setColor(config.colors.warning)
+      .setTitle("⏳  Service Temporarily Unavailable")
+      .setDescription(
+        "Our support service is currently unreachable. " +
+        "Your message has been saved and **will be delivered automatically** once the service is back online."
+      )
+      .setFooter(brandFooter())
+      .setTimestamp();
+    await message.channel.send({ embeds: [embed] }).catch(() => {});
+    return;
+  }
 
   try {
     // ── Working hours check (single pass) ───────────────────────────────────
@@ -95,6 +124,7 @@ export async function handleDM(message: Message): Promise<void> {
     const isNewContact = !mapping;
 
     if (!mapping) {
+      // Brand-new user — create contact + first conversation
       const { contactId, sourceId } = await createContact({
         id: user.id,
         username: user.username,
@@ -105,14 +135,17 @@ export async function handleDM(message: Message): Promise<void> {
       saveMapping(userId, contactId, sourceId, convId);
       mapping = getMapping(userId)!;
     } else {
-      // Fetch existing conversation — may be 404 if deleted from Chatwoot
+      // Existing user — check whether the inbox locks to a single conversation.
+      // Chatwoot setting: lock_to_single_conversation (default false).
+      const lockSingle = inbox?.lock_to_single_conversation ?? false;
+
       let conv: Awaited<ReturnType<typeof getConversation>> | null = null;
       try {
         conv = await getConversation(mapping.chatwoot_conv_id);
       } catch (err) {
         if (err instanceof Error && err.message.includes("404")) {
           console.warn(
-            `[dmHandler] Conversation ${mapping.chatwoot_conv_id} not found in Chatwoot — creating a new one`
+            `[dmHandler] Conversation ${mapping.chatwoot_conv_id} not found — re-creating for ${userId}`
           );
         } else {
           throw err;
@@ -120,76 +153,68 @@ export async function handleDM(message: Message): Promise<void> {
       }
 
       if (conv === null) {
-        // Stale mapping: conversation was deleted from Chatwoot.
-        // Try creating a new conversation with the existing source_id first;
-        // if that also 404s (contact_inbox was wiped), re-create the full
-        // contact + inbox chain from scratch.
-        let newConvId: number | null = null;
-        try {
-          newConvId = await createConversation(
-            mapping.chatwoot_source_id,
-            mapping.chatwoot_contact_id,
-            reopenStatus
-          );
-        } catch (convErr) {
-          if (convErr instanceof Error && convErr.message.includes("404")) {
-            console.warn(
-              `[dmHandler] contact_inbox also stale — re-creating contact chain for ${userId}`
+        // Conversation was deleted from Chatwoot — re-create the full chain.
+        const { contactId, sourceId } = await createContact({
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          avatarURL: user.displayAvatarURL({ size: 256 }),
+        });
+        const newConvId = await createConversation(sourceId, contactId, reopenStatus);
+        saveMapping(userId, contactId, sourceId, newConvId);
+        mapping = getMapping(userId)!;
+      } else if (conv.status === "resolved" || conv.status === "snoozed") {
+        if (lockSingle) {
+          // Inbox locks to a single conversation — always reopen.
+          await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
+        } else {
+          // Multiple conversations allowed — check the stale-window.
+          const windowHours = config.tickets.reopenWindowHours;
+          const isStale =
+            windowHours > 0 &&
+            conv.status === "resolved" &&
+            (Date.now() / 1000 - conv.last_activity_at) > windowHours * 3600;
+
+          if (isStale) {
+            console.log(
+              `[dmHandler] Conv ${mapping.chatwoot_conv_id} last active ` +
+              `${Math.round((Date.now() / 1000 - conv.last_activity_at) / 3600)}h ago — creating new ticket`
             );
-            const { contactId, sourceId } = await createContact({
-              id: user.id,
-              username: user.username,
-              displayName: user.displayName,
-              avatarURL: user.displayAvatarURL({ size: 256 }),
-            });
-            newConvId = await createConversation(sourceId, contactId, reopenStatus);
-            saveMapping(userId, contactId, sourceId, newConvId);
+            const newConvId = await createConversation(
+              mapping.chatwoot_source_id,
+              mapping.chatwoot_contact_id,
+              reopenStatus
+            );
+            saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
             mapping = getMapping(userId)!;
           } else {
-            throw convErr;
+            // Within the window — reopen the existing conversation.
+            await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
           }
         }
-        if (newConvId !== null && mapping.chatwoot_conv_id !== newConvId) {
-          saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
-          mapping = getMapping(userId)!;
-        }
-      } else if (conv.status === "resolved" || conv.status === "snoozed") {
-        // If the resolved ticket is older than the configured window,
-        // start a fresh conversation instead of reopening the stale one.
-        const windowHours = config.tickets.reopenWindowHours;
-        const isStale =
-          windowHours > 0 &&
-          conv.status === "resolved" &&
-          (Date.now() / 1000 - conv.last_activity_at) > windowHours * 3600;
-
-        if (isStale) {
-          console.log(
-            `[dmHandler] Conv ${mapping.chatwoot_conv_id} last active ` +
-            `${Math.round((Date.now() / 1000 - conv.last_activity_at) / 3600)}h ago — creating new ticket`
-          );
-          const newConvId = await createConversation(
-            mapping.chatwoot_source_id,
-            mapping.chatwoot_contact_id,
-            reopenStatus
-          );
-          saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
-          mapping = getMapping(userId)!;
-        } else {
-          // Still within the window — reopen the existing conversation
-          await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
-        }
       }
+      // If conv.status is already "open" or "pending" — nothing to do.
     }
 
     // ── Forward message to Chatwoot ──────────────────────────────────────────
-    const parts: string[] = [];
-    if (message.content.trim()) parts.push(message.content.trim());
-    for (const att of message.attachments.values()) {
-      parts.push(`[Attachment: ${att.name}](${att.url})`);
+    try {
+      await sendMessage(mapping.chatwoot_conv_id, content, "incoming");
+    } catch (sendErr) {
+      // Message delivery failed — queue it for automatic retry
+      console.warn(`[dmHandler] sendMessage failed, queuing for retry:`, sendErr);
+      enqueueMessage(mapping.chatwoot_conv_id, content);
+      const embed = new EmbedBuilder()
+        .setColor(config.colors.warning)
+        .setTitle("⏳  Message Queued")
+        .setDescription(
+          "Your message couldn't be delivered right now but has been saved. " +
+          "It will be sent automatically once the service is available."
+        )
+        .setFooter(brandFooter())
+        .setTimestamp();
+      await message.channel.send({ embeds: [embed] }).catch(() => {});
+      return; // Skip greeting / OOH notice — they'll see it next time
     }
-    const content = parts.join("\n") || "(empty message)";
-
-    await sendMessage(mapping.chatwoot_conv_id, content, "incoming");
 
     // ── Greeting (first contact only) ────────────────────────────────────────
     // Prefer Chatwoot inbox settings; fall back to env vars only when inbox
@@ -222,11 +247,50 @@ export async function handleDM(message: Message): Promise<void> {
     }
   } catch (err) {
     console.error(`[dmHandler] Error for user ${userId}:`, err);
-    const embed = new EmbedBuilder()
-      .setColor(config.colors.danger)
-      .setDescription("❌  Something went wrong. Please try again in a moment.")
-      .setTimestamp()
-      .setFooter(brandFooter());
-    await message.channel.send({ embeds: [embed]}).catch(() => {});
+
+    // Detect Chatwoot connectivity issues (fetch failures, timeouts, 5xx)
+    const isChatwootErr =
+      err instanceof Error &&
+      (err.message.includes("fetch") ||
+       err.message.includes("Chatwoot") ||
+       err.message.includes("ECONNREFUSED") ||
+       err.message.includes("abort") ||
+       /→ 5\d\d:/.test(err.message));
+
+    if (isChatwootErr) {
+      // If the user already has a mapping we can queue; otherwise we can't.
+      const m = getMapping(userId);
+      if (m) {
+        enqueueMessage(m.chatwoot_conv_id, content);
+        const embed = new EmbedBuilder()
+          .setColor(config.colors.warning)
+          .setTitle("⏳  Service Temporarily Unavailable")
+          .setDescription(
+            "Our support backend is currently unreachable. " +
+            "Your message has been saved and **will be delivered automatically** once the service is back online."
+          )
+          .setFooter(brandFooter())
+          .setTimestamp();
+        await message.channel.send({ embeds: [embed] }).catch(() => {});
+      } else {
+        const embed = new EmbedBuilder()
+          .setColor(config.colors.warning)
+          .setTitle("⏳  Service Temporarily Unavailable")
+          .setDescription(
+            "Our support backend is currently unreachable. " +
+            "Please try again in a few minutes — we're working on it!"
+          )
+          .setFooter(brandFooter())
+          .setTimestamp();
+        await message.channel.send({ embeds: [embed] }).catch(() => {});
+      }
+    } else {
+      const embed = new EmbedBuilder()
+        .setColor(config.colors.danger)
+        .setDescription("❌  Something went wrong. Please try again in a moment.")
+        .setTimestamp()
+        .setFooter(brandFooter());
+      await message.channel.send({ embeds: [embed] }).catch(() => {});
+    }
   }
 }

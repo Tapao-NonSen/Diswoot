@@ -7,6 +7,12 @@ import { handleDM } from "./src/bot/handlers/dmHandler";
 import { handleInteraction } from "./src/bot/handlers/interactionHandler";
 import { startWebhookServer } from "./src/webhook/server";
 import { startPresencePoller } from "./src/bot/presence";
+import { startHealthCheck, stopHealthCheck } from "./src/chatwoot/health";
+import { startRetryWorker, stopRetryWorker } from "./src/lib/retryQueue";
+
+// ── Chatwoot health check & retry worker ────────────────────────────────────
+startHealthCheck();
+startRetryWorker();
 
 // ── Webhook server ──────────────────────────────────────────────────────────
 const webhookServer = startWebhookServer();
@@ -26,6 +32,8 @@ discordClient.on(Events.InteractionCreate, handleInteraction);
 // ── Graceful shutdown ───────────────────────────────────────────────────────
 function shutdown() {
   console.log("\n[main] Shutting down…");
+  stopHealthCheck();
+  stopRetryWorker();
   discordClient.destroy();
   webhookServer.stop();
   process.exit(0);

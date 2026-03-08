@@ -4,15 +4,18 @@ A Discord ↔ Chatwoot bridge bot. Discord users send DMs to the bot; messages a
 
 ## Features
 
-- Discord DMs → Chatwoot conversations (auto-creates contact + conversation on first message)
-- Chatwoot agent replies → Discord DMs via webhook
-- Auto-reopens resolved/snoozed conversations when the user messages again
-- Dynamic bot presence synced with Chatwoot working hours (Online / Idle)
-- Outside-working-hours handling: allow (accept + notify) or deny (reject with message)
-- Out-of-office message pulled directly from Chatwoot inbox configuration
-- User slash commands: `/status`, `/close`, `/reopen`, `/help`
-- HMAC webhook signature verification
-- Configurable embed colors
+- **Discord DMs → Chatwoot conversations** — auto-creates contact + conversation on first message
+- **Chatwoot agent replies → Discord DMs** via webhook
+- **Smart conversation reopen** — respects Chatwoot's `lock_to_single_conversation` inbox setting; falls back to a configurable stale-window when unlocked
+- **Native CSAT integration** — "Rate us" button → Discord modal (1–5 rating + optional comment), submitted to Chatwoot's native CSAT reports
+- **Dynamic bot presence** synced with Chatwoot working hours (Online / Idle)
+- **Outside-working-hours handling** — allow (accept + notify) or deny (reject with out-of-office message)
+- **Out-of-office & greeting messages** pulled directly from Chatwoot inbox configuration (with env-var fallbacks)
+- **Retry queue** — failed messages and CSAT submissions are queued in SQLite and retried automatically
+- **Health monitoring** — periodic Chatwoot reachability check with graceful degradation
+- **User slash commands** — `/status`, `/close`, `/reopen`, `/help`
+- **HMAC webhook signature verification**
+- **Configurable embed colors and branding**
 
 ---
 
@@ -41,9 +44,12 @@ A Discord ↔ Chatwoot bridge bot. Discord users send DMs to the bot; messages a
 
 1. Create an **API inbox** (Settings → Inboxes → Add Inbox → API).
 2. Note the **Inbox ID** from the inbox settings URL.
-3. Under the inbox configuration:
+3. Under the inbox **Configuration** tab:
    - Set **Working Hours** and **Timezone** as needed.
    - Fill in **Out of office message** (shown to users outside working hours).
+   - Fill in **Greeting message** (shown once when a user first opens a ticket).
+   - Enable/disable **CSAT** — the bot reads this setting at runtime.
+   - Set **Lock to single conversation** — when enabled, returning users always reopen their last conversation instead of creating a new one.
 4. Create a webhook pointing to `http://your-server:3000/webhook` with events:
    - `message_created`
    - `conversation_status_changed`
@@ -133,15 +139,26 @@ RESOLVED_MESSAGE=Your support ticket has been resolved. DM us again to reopen it
 GREETING_ENABLED=true
 GREETING_MESSAGE=Thanks for reaching out! A support agent will get back to you as soon as possible.
 
-# CSAT — star-rating buttons sent after a ticket is resolved
+# CSAT — "Rate us" button sent after a ticket is resolved
+# Also respects inbox-level "CSAT" toggle in Chatwoot settings.
 CSAT_ENABLED=true
 CSAT_QUESTION=How would you rate your support experience?
+CSAT_BUTTON_LABEL=⭐ Rate us
+CSAT_COMMENT_ENABLED=true
+CSAT_COMMENT_PLACEHOLDER=Any additional feedback? (optional)
 
 # Status change notifications — leave blank to disable each one
-# Sent when an agent snoozes a ticket
 SNOOZED_MESSAGE="Your ticket has been snoozed. We'll follow up with you soon."
-# Sent when a ticket moves to "pending" (waiting for agent assignment)
 PENDING_MESSAGE="Your ticket is queued and will be assigned to an agent shortly."
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🎫  Ticket Lifecycle (optional)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Also respects Chatwoot "Lock to single conversation" inbox setting.
+# If locked in Chatwoot → always reopens the existing conversation.
+# If unlocked → uses the stale window below.
+# 0 = always reopen the last conversation (default)
+REOPEN_WINDOW_HOURS=0
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🕐  Outside Working Hours (optional)
@@ -159,6 +176,13 @@ OUTSIDE_HOURS_FALLBACK_MESSAGE=Our support team is currently offline.
 > **Out-of-office message content** is pulled from your Chatwoot inbox configuration
 > (Inbox Settings → Configuration → Out of office message). The fallback above is
 > only shown when that field is empty.
+
+> **CSAT toggle** is read from the Chatwoot inbox at runtime. If the inbox has CSAT
+> disabled, the "Rate us" button will not be sent even if `CSAT_ENABLED=true` in `.env`.
+
+> **Lock to single conversation** is read from the Chatwoot inbox at runtime. When
+> enabled, the bot always reopens the user's last conversation regardless of
+> `REOPEN_WINDOW_HOURS`.
 
 ---
 
@@ -209,7 +233,9 @@ dmHandler.ts
     │   ├─ deny mode  → send out-of-office embed, stop
     │   └─ allow mode → continue
     ├─ Find or create Chatwoot contact + conversation
-    ├─ Auto-reopen resolved/snoozed conversation
+    ├─ Smart reopen logic
+    │   ├─ lock_to_single_conversation ON  → always reopen
+    │   └─ lock_to_single_conversation OFF → reopen within REOPEN_WINDOW_HOURS, else new ticket
     ├─ Forward message to Chatwoot as "incoming"
     ├─ React ✅ to confirm receipt
     └─ (allow + outside hours) → send out-of-office embed
@@ -223,7 +249,15 @@ Chatwoot webhook → POST /webhook
     │   └─ Fetch Discord user → send DM
     │
     └─ conversation_status_changed (resolved)
-        └─ Send resolved notification DM
+        ├─ Send resolved notification DM
+        └─ Send CSAT "Rate us" button (if inbox CSAT enabled)
+                │
+                ▼ (user clicks button)
+        interactionHandler.ts
+            ├─ Show Discord modal (rating 1–5 + optional comment)
+            ├─ Save to local SQLite DB
+            └─ Submit to Chatwoot native CSAT API
+                └─ On failure → enqueue to retry queue
 ```
 
 ---
@@ -247,15 +281,18 @@ diswoot/
 │   │   │   └── help.ts
 │   │   └── handlers/
 │   │       ├── dmHandler.ts         # Incoming Discord DM → Chatwoot
-│   │       └── interactionHandler.ts # Slash command router
+│   │       └── interactionHandler.ts # CSAT modal + slash command router
 │   ├── chatwoot/
-│   │   ├── client.ts           # Chatwoot REST API client
+│   │   ├── client.ts           # Chatwoot REST API client (v4.11.1)
+│   │   ├── health.ts           # Periodic reachability check
 │   │   ├── types.ts            # TypeScript interfaces
 │   │   ├── workingHours.ts     # Working hours / next-opening logic
-│   │   └── inboxCache.ts       # 5-minute TTL inbox cache
+│   │   └── inboxCache.ts       # 5-minute TTL inbox config cache
 │   ├── db/
 │   │   ├── index.ts            # SQLite init + migrations
 │   │   └── queries.ts          # Prepared statement helpers
+│   ├── lib/
+│   │   └── retryQueue.ts       # SQLite-backed retry queue for failed API calls
 │   └── webhook/
 │       └── server.ts           # Bun HTTP server for Chatwoot webhooks
 └── data/
@@ -274,4 +311,23 @@ bun run typecheck
 bun start
 ```
 
-The SQLite database is created automatically at `data/diswoot.db` on first run.
+The SQLite database is created automatically at `data/diswoot.db` on first run (WAL mode enabled for concurrent reads).
+
+---
+
+## Chatwoot API compatibility
+
+All endpoints are verified against **Chatwoot v4.11.1** ([swagger.json](https://raw.githubusercontent.com/chatwoot/chatwoot/v4.11.1/swagger/swagger.json)):
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/accounts/{id}/contacts/search` | GET | Find existing contact by Discord ID |
+| `/api/v1/accounts/{id}/contacts` | POST | Create new contact |
+| `/api/v1/accounts/{id}/contacts/{id}/contact_inboxes` | POST | Link contact to inbox |
+| `/api/v1/accounts/{id}/conversations` | POST | Create conversation |
+| `/api/v1/accounts/{id}/conversations/{id}/messages` | POST | Send message / private note |
+| `/api/v1/accounts/{id}/conversations/{id}/toggle_status` | POST | Open / resolve / pending |
+| `/api/v1/accounts/{id}/conversations/{id}` | GET | Fetch conversation metadata |
+| `/api/v1/accounts/{id}/inboxes/{id}` | GET | Fetch inbox config (CSAT, lock, hours) |
+| `/public/api/v1/csat_survey/{uuid}` | PATCH | Submit native CSAT rating |
+

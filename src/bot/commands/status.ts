@@ -3,6 +3,7 @@ import { Embeds, brandFooter } from "../embed";
 import { config } from "../../config";
 import { getMapping } from "../../db/queries";
 import { getConversation } from "../../chatwoot/client";
+import { isChatwootHealthy } from "../../chatwoot/health";
 
 const STATUS_DISPLAY: Record<string, string> = {
   open:     "🟢  Open",
@@ -12,6 +13,14 @@ const STATUS_DISPLAY: Record<string, string> = {
 };
 
 export async function execute(message: Message): Promise<void> {
+  if (!isChatwootHealthy()) {
+    await message.reply({
+      embeds: [Embeds.warning("Support service is currently unreachable. Please try again in a few minutes.")],
+      allowedMentions: { repliedUser: false },
+    });
+    return;
+  }
+
   const mapping = getMapping(message.author.id);
   if (!mapping) {
     await message.reply({
@@ -25,7 +34,20 @@ export async function execute(message: Message): Promise<void> {
     return;
   }
 
-  const conv = await getConversation(mapping.chatwoot_conv_id);
+  let conv;
+  try {
+    conv = await getConversation(mapping.chatwoot_conv_id);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("404")) {
+      await message.reply({
+        embeds: [Embeds.warning("Your ticket could not be found. It may have been deleted. Send a new message to open a fresh ticket.")],
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    }
+    throw err;
+  }
+
   const statusLabel = STATUS_DISPLAY[conv.status] ?? conv.status;
 
   const lastActivity = conv.last_activity_at

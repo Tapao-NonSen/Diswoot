@@ -148,7 +148,9 @@ export async function createContact(discordUser: {
   return { contactId, sourceId };
 }
 
-/** Create a new conversation for the contact. */
+/** Create a new conversation for the contact.
+ *  Sends both source_id and inbox_id — Chatwoot v4.11.1 marks
+ *  source_id-only lookup as deprecated (will require inbox_id in future). */
 export async function createConversation(
   sourceId: string,
   contactId: number,
@@ -156,6 +158,7 @@ export async function createConversation(
 ): Promise<number> {
   const raw = await request<unknown>("POST", "/conversations", {
     source_id: sourceId,
+    inbox_id: inboxId,
     status,
   });
   console.debug("[createConversation] raw:", JSON.stringify(raw));
@@ -213,6 +216,10 @@ export async function submitCsatRating(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    // Chatwoot locks CSAT submissions after 14 days — return a typed error
+    if (res.status === 422) {
+      throw new Error(`CSAT_LOCKED: ${text}`);
+    }
     throw new Error(`Chatwoot CSAT PATCH → ${res.status}: ${text}`);
   }
 }
@@ -232,13 +239,7 @@ export async function getConversation(
   return request<ChatwootConversation>("GET", `/conversations/${convId}`);
 }
 
-/** Fetch inbox config including working hours.
- *  Chatwoot has no GET /inboxes/:id endpoint — we list all and filter. */
+/** Fetch inbox config including working hours. */
 export async function getInbox(): Promise<ChatwootInbox> {
-  const data = await request<{ payload: ChatwootInbox[] }>("GET", "/inboxes");
-  const inbox = data.payload.find((i) => i.id === inboxId);
-  if (!inbox) {
-    throw new Error(`Inbox ${inboxId} not found in account ${accountId}`);
-  }
-  return inbox;
+  return request<ChatwootInbox>("GET", `/inboxes/${inboxId}`);
 }
