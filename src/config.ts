@@ -79,6 +79,9 @@ export const config = {
       "Our support team is currently offline."
     ),
   },
+  tickets: {
+    reopenWindowHours: Number(optional("REOPEN_WINDOW_HOURS", "0")),
+  },
 } as const;
 
 export type Config = typeof config;

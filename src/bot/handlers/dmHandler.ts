@@ -154,8 +154,30 @@ export async function handleDM(message: Message): Promise<void> {
           mapping = getMapping(userId)!;
         }
       } else if (conv.status === "resolved" || conv.status === "snoozed") {
-        // Reopen resolved / snoozed conversations automatically
-        await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
+        // If the resolved ticket is older than the configured window,
+        // start a fresh conversation instead of reopening the stale one.
+        const windowHours = config.tickets.reopenWindowHours;
+        const isStale =
+          windowHours > 0 &&
+          conv.status === "resolved" &&
+          (Date.now() / 1000 - conv.last_activity_at) > windowHours * 3600;
+
+        if (isStale) {
+          console.log(
+            `[dmHandler] Conv ${mapping.chatwoot_conv_id} last active ` +
+            `${Math.round((Date.now() / 1000 - conv.last_activity_at) / 3600)}h ago — creating new ticket`
+          );
+          const newConvId = await createConversation(
+            mapping.chatwoot_source_id,
+            mapping.chatwoot_contact_id,
+            reopenStatus
+          );
+          saveMapping(userId, mapping.chatwoot_contact_id, mapping.chatwoot_source_id, newConvId);
+          mapping = getMapping(userId)!;
+        } else {
+          // Still within the window — reopen the existing conversation
+          await toggleStatus(mapping.chatwoot_conv_id, reopenStatus);
+        }
       }
     }
 
